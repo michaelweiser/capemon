@@ -1506,8 +1506,6 @@ BOOL DumpPEsInRange(LPVOID Buffer, SIZE_T Size)
             *(WORD*)pDosHeader = IMAGE_DOS_SIGNATURE;
             *(DWORD*)((PUCHAR)pDosHeader + pDosHeader->e_lfanew) = IMAGE_NT_SIGNATURE;
 
-            SetCapeMetaData(INJECTION_PE, 0, NULL, (PVOID)pDosHeader);
-
             if (DumpImageInCurrentProcess((LPVOID)pDosHeader))
             {
                 DoOutputDebugString("DumpPEsInRange: Dumped PE image from 0x%x.\n", pDosHeader);
@@ -2205,7 +2203,7 @@ void init_CAPE()
     DoOutputDebugString("Commandline: %s.\n", CommandLine);
 
 #ifdef CAPE_TRACE
-    if (!g_config.base_on_apiname[0])
+    if (!g_config.base_on_apiname[0] && !g_config.first_region_api[0])
         SetInitialBreakpoints(GetModuleHandle(NULL));
 #endif
 

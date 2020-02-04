@@ -44,7 +44,7 @@ HOOKDEF(HHOOK, WINAPI, SetWindowsHookExA,
 
 	if (hMod && lpfn && dwThreadId) {
 		DWORD pid = get_pid_by_tid(dwThreadId);
-		if (pid && pid != GetCurrentProcessId())
+		if (!g_config.single_process && pid && pid != GetCurrentProcessId())
 			pipe("PROCESS:%d:%d,%d", is_suspended(pid, dwThreadId), pid, dwThreadId);
 	}
 
@@ -65,7 +65,7 @@ HOOKDEF(HHOOK, WINAPI, SetWindowsHookExW,
 
 	if (hMod && lpfn && dwThreadId) {
 		DWORD pid = get_pid_by_tid(dwThreadId);
-		if (pid && pid != GetCurrentProcessId())
+		if (!g_config.single_process && pid && pid != GetCurrentProcessId())
 			pipe("PROCESS:%d:%d,%d", is_suspended(pid, dwThreadId), pid, dwThreadId);
 	}
 
@@ -605,14 +605,77 @@ HOOKDEF(NTSTATUS, WINAPI, RtlDecompressBuffer,
 	NTSTATUS ret = Old_RtlDecompressBuffer(CompressionFormat, UncompressedBuffer, UncompressedBufferSize,
 		CompressedBuffer, CompressedBufferSize, FinalUncompressedSize);
 
-    if ((NT_SUCCESS(ret) || ret == STATUS_BAD_COMPRESSION_BUFFER) && (*FinalUncompressedSize > 0)) {
-	//	There are samples that return STATUS_BAD_COMPRESSION_BUFFER but still continue
-        LOQ_ntstatus("misc", "pch", "UncompressedBufferAddress", UncompressedBuffer, "UncompressedBuffer",
-            *FinalUncompressedSize, UncompressedBuffer, "UncompressedBufferLength", *FinalUncompressedSize);
-	}
-    else
-        LOQ_ntstatus("misc", "pch", "UncompressedBufferAddress", UncompressedBuffer, "UncompressedBuffer",
-            0, UncompressedBuffer, "UncompressedBufferLength", 0);
+    if (g_config.compression) {
+        CapeMetaData->DumpType = COMPRESSION;
+        if ((ret == STATUS_BAD_COMPRESSION_BUFFER) && (*FinalUncompressedSize > 0)) {
+            DoOutputDebugString("RtlDecompressBuffer hook: Checking for PE image(s) despite STATUS_BAD_COMPRESSION_BUFFER.\n", UncompressedBuffer, *FinalUncompressedSize);
+            if (!DumpPEsInRange(UncompressedBuffer, UncompressedBufferSize))
+            {   // If this fails let's try our own buffer
+                NTSTATUS NewRet;
+                PUCHAR CapeBuffer = NULL;
+                ULONG NewUncompressedBufferSize = UncompressedBufferSize;
+                do
+                {
+                    ULONG UncompressedSize;
+
+                    if (CapeBuffer) {
+                        if (DumpPEsInRange(CapeBuffer, NewUncompressedBufferSize)) {
+                            DoOutputDebugString("RtlDecompressBuffer hook: Dumped PE file(s) from new buffer.\n");
+                            break;
+                        }
+                        free(CapeBuffer);
+                    }
+
+                    NewUncompressedBufferSize += UncompressedBufferSize;
+                    CapeBuffer = (PUCHAR)malloc(NewUncompressedBufferSize);
+
+                    if (!CapeBuffer) {
+                        DoOutputDebugString("RtlDecompressBuffer hook: Failed to allocate new buffer.\n");
+                        break;
+                    }
+                    else
+                    {
+                        DoOutputDebugString("RtlDecompressBuffer hook: Allocated new buffer of 0x%x bytes.\n", NewUncompressedBufferSize);
+                        NewRet = Old_RtlDecompressBuffer(CompressionFormat, CapeBuffer, NewUncompressedBufferSize,
+                            CompressedBuffer, CompressedBufferSize, &UncompressedSize);
+                    }
+                }
+                // Most decompressions should succeed in under 0x10 times original uncompressed buffer size
+                while (NewRet == STATUS_BAD_COMPRESSION_BUFFER && NewUncompressedBufferSize < (UncompressedBufferSize * 0x10));
+
+                if (NT_SUCCESS(NewRet)) {
+                    if (DumpPEsInRange(UncompressedBuffer, *FinalUncompressedSize))
+                        DoOutputDebugString("RtlDecompressBuffer hook: Dumped PE file(s) from new buffer.\n");
+                }
+                else
+                    DoOutputErrorString("RtlDecompressBuffer hook: Failed to decompress to new buffer");
+
+                if (CapeBuffer)
+                    free(CapeBuffer);
+            }
+            LOQ_ntstatus("misc", "pch", "UncompressedBufferAddress", UncompressedBuffer, "UncompressedBuffer",
+                *FinalUncompressedSize, UncompressedBuffer, "UncompressedBufferLength", *FinalUncompressedSize);
+        }
+        else if (NT_SUCCESS(ret)) {
+            DoOutputDebugString("RtlDecompressBuffer hook: scanning region 0x%x size 0x%x for PE image(s).\n", UncompressedBuffer, *FinalUncompressedSize);
+            DumpPEsInRange(UncompressedBuffer, *FinalUncompressedSize);
+            LOQ_ntstatus("misc", "pch", "UncompressedBufferAddress", UncompressedBuffer, "UncompressedBuffer",
+                *FinalUncompressedSize, UncompressedBuffer, "UncompressedBufferLength", *FinalUncompressedSize);
+        }
+        else
+            LOQ_ntstatus("misc", "pch", "UncompressedBufferAddress", UncompressedBuffer, "UncompressedBuffer",
+                0, UncompressedBuffer, "UncompressedBufferLength", 0);
+    }
+    else {
+        if ((NT_SUCCESS(ret) || ret == STATUS_BAD_COMPRESSION_BUFFER) && (*FinalUncompressedSize > 0)) {
+        //	There are samples that return STATUS_BAD_COMPRESSION_BUFFER but still continue
+            LOQ_ntstatus("misc", "pch", "UncompressedBufferAddress", UncompressedBuffer, "UncompressedBuffer",
+                *FinalUncompressedSize, UncompressedBuffer, "UncompressedBufferLength", *FinalUncompressedSize);
+        }
+        else
+            LOQ_ntstatus("misc", "pch", "UncompressedBufferAddress", UncompressedBuffer, "UncompressedBuffer",
+                0, UncompressedBuffer, "UncompressedBufferLength", 0);
+    }
 
 	return ret;
 }
@@ -1525,4 +1588,36 @@ HOOKDEF(HKL, WINAPI, GetKeyboardLayout,
     HKL ret = Old_GetKeyboardLayout(idThread);
     LOQ_nonnull("misc", "p", "KeyboardLayout", (DWORD)ret & 0xFFFF);
     return ret;
+}
+
+HOOKDEF(VOID, WINAPI, RtlMoveMemory,
+    _Out_       VOID UNALIGNED *Destination,
+    _In_  const VOID UNALIGNED *Source,
+    _In_        SIZE_T         Length
+)
+{
+    int ret = 0;
+    Old_RtlMoveMemory(Destination, Source, Length);
+    LOQ_void("misc", "bppi", "Destination", Length, Destination, "Source", Source, "destination", Destination, "Length", Length);
+    return;
+}
+
+HOOKDEF(void, WINAPI, OutputDebugStringA,
+  LPCSTR lpOutputString
+)
+{
+    int ret = 0;
+    Old_OutputDebugStringA(lpOutputString);
+    LOQ_void("misc", "s", "OutputString", lpOutputString);
+    return;
+}
+
+HOOKDEF(void, WINAPI, OutputDebugStringW,
+  LPCWSTR lpOutputString
+)
+{
+    int ret = 0;
+    Old_OutputDebugStringW(lpOutputString);
+    LOQ_void("misc", "u", "OutputString", lpOutputString);
+    return;
 }

@@ -1101,6 +1101,11 @@ extern HOOKDEF(NTSTATUS, WINAPI, DbgUiWaitStateChange,
 	__in_opt PLARGE_INTEGER Timeout
 );
 
+extern HOOKDEF(void, WINAPI, KiUserExceptionDispatcher,
+	__in PEXCEPTION_RECORD ExceptionRecord,
+	__in PCONTEXT Context
+);
+
 extern HOOKDEF(BOOLEAN, WINAPI, RtlDispatchException,
 	__in PEXCEPTION_RECORD ExceptionRecord,
 	__in PCONTEXT Context
@@ -2814,6 +2819,39 @@ extern HOOKDEF(BOOL, WINAPI, CryptGenRandom,
     BYTE       *pbBuffer
 );
 
+HOOKDEF(SECURITY_STATUS, WINAPI, NCryptImportKey,
+    NCRYPT_PROV_HANDLE hProvider,
+    NCRYPT_KEY_HANDLE  hImportKey,
+    LPCWSTR            pszBlobType,
+    NCryptBufferDesc   *pParameterList,
+    NCRYPT_KEY_HANDLE  *phKey,
+    PBYTE              pbData,
+    DWORD              cbData,
+    DWORD              dwFlags
+);
+
+HOOKDEF(SECURITY_STATUS, WINAPI, NCryptDecrypt,
+    NCRYPT_KEY_HANDLE hKey,
+    PBYTE             pbInput,
+    DWORD             cbInput,
+    VOID              *pPaddingInfo,
+    PBYTE             pbOutput,
+    DWORD             cbOutput,
+    DWORD             *pcbResult,
+    DWORD             dwFlags
+);
+
+HOOKDEF(SECURITY_STATUS, WINAPI, NCryptEncrypt,
+    NCRYPT_KEY_HANDLE hKey,
+    PBYTE             pbInput,
+    DWORD             cbInput,
+    VOID              *pPaddingInfo,
+    PBYTE             pbOutput,
+    DWORD             cbOutput,
+    DWORD             *pcbResult,
+    DWORD             dwFlags
+);
+
 //
 // Special Hooks
 //
@@ -3035,6 +3073,12 @@ extern HOOKDEF(NTSTATUS, WINAPI, NtYieldExecution,
     VOID
 );
 
+extern HOOKDEF(VOID, WINAPI, RtlMoveMemory,
+    _Out_       VOID UNALIGNED *Destination,
+    _In_  const VOID UNALIGNED *Source,
+    _In_        SIZE_T         Length
+);
+
 extern HOOKDEF(HRESULT, WINAPI, OleConvertOLESTREAMToIStorage,
     IN LPOLESTREAM          lpolestream,
     OUT LPSTORAGE           pstg,
@@ -3067,4 +3111,12 @@ extern HOOKDEF(HANDLE, WINAPI, HeapCreate,
 
 extern HOOKDEF(HKL, WINAPI, GetKeyboardLayout,
   _In_ DWORD idThread
+);
+
+extern HOOKDEF (void, WINAPI, OutputDebugStringA,
+  LPCSTR lpOutputString
+);
+
+extern HOOKDEF (void, WINAPI, OutputDebugStringW,
+  LPCWSTR lpOutputString
 );

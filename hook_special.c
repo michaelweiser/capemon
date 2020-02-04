@@ -28,10 +28,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
 extern int DoProcessDump(PVOID CallerBase);
 extern ULONG_PTR base_of_dll_of_interest;
-extern PVOID GetHookCallerBase(hook_info_t *hookinfo);
-#ifdef CAPE_INJECTION
-extern void CreateProcessHandler(LPWSTR lpApplicationName, LPWSTR lpCommandLine, LPPROCESS_INFORMATION lpProcessInformation);
-#endif
+extern PVOID GetHookCallerBase();
 
 PVOID LastDllUnload;
 
@@ -124,7 +121,7 @@ HOOKDEF_NOTAIL(WINAPI, LdrUnloadDll,
 	PVOID DllImageBase
 ) {
     if (DllImageBase && DllImageBase == (PVOID)base_of_dll_of_interest)
-        DoProcessDump(GetHookCallerBase(NULL));
+        DoProcessDump(GetHookCallerBase());
 
     if (DllImageBase && DllImageBase != LastDllUnload)
     {
@@ -165,11 +162,9 @@ HOOKDEF(BOOL, WINAPI, CreateProcessInternalW,
 			dont_monitor = TRUE;
 
 		if (!dont_monitor) {
-#ifdef CAPE_INJECTION
-            CreateProcessHandler(lpApplicationName, lpCommandLine, lpProcessInformation);
-#endif
-			pipe("PROCESS:%d:%d,%d", (dwCreationFlags & CREATE_SUSPENDED) ? 1 : 0, lpProcessInformation->dwProcessId,
-			    lpProcessInformation->dwThreadId);
+			if (!g_config.single_process)
+                pipe("PROCESS:%d:%d,%d", (dwCreationFlags & CREATE_SUSPENDED) ? 1 : 0, lpProcessInformation->dwProcessId,
+                    lpProcessInformation->dwThreadId);
         }
 
         // if the CREATE_SUSPENDED flag was not set, then we have to resume the main thread ourself

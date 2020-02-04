@@ -26,6 +26,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "misc.h"
 #include "pipe.h"
 #include "CAPE\CAPE.h"
+#include "CAPE\Debugger.h"
 
 #ifdef _WIN64
 #define TLS_LAST_WIN32_ERROR 0x68
@@ -38,12 +39,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 static lookup_t g_hook_info;
 lookup_t g_caller_regions;
 
+#ifdef CAPE_EXTRACTION
+#include "CAPE\Extraction.h"
+#endif
+
+
 extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
 extern BOOL DumpRegion(PVOID Address);
 extern int DumpImageInCurrentProcess(LPVOID ImageBase);
 extern PVOID GetAllocationBase(PVOID Address);
 extern PVOID GetHookCallerBase(hook_info_t *hookinfo);
 extern BOOL ModuleDumped;
+
+
 #ifdef CAPE_TRACE
 extern BOOL SetInitialBreakpoints(PVOID ImageBase);
 extern BOOL BreakpointOnReturn(PVOID Address);
@@ -74,8 +82,56 @@ static int set_caller_info(void *unused, ULONG_PTR addr)
         if (AllocationBase && !lookup_get(&g_caller_regions, (ULONG_PTR)AllocationBase, 0)) {
             DoOutputDebugString("set_caller_info: Adding region at 0x%p to caller regions list (%ws::%s).\n", AllocationBase, hookinfo->current_hook->library, hookinfo->current_hook->funcname);
             lookup_add(&g_caller_regions, (ULONG_PTR)AllocationBase, 0);
-        }
+#ifdef CAPE_TRACE
+            for (unsigned int i = 0; i < ARRAYSIZE(g_config.first_region_api); i++) {
+                if (!g_config.first_region_api[i])
+                    break;
+                if (!stricmp(hookinfo->current_hook->funcname, g_config.first_region_api[i])) {
+                    DoOutputDebugString("First-region-API: %s call detected in thread %d, addr 0x%p.\n", g_config.first_region_api[i], GetCurrentThreadId(), addr);
+                    if (g_config.region_type) {
+                        CapeMetaData->DumpType = g_config.region_type;
+                        if (DumpImageInCurrentProcess(AllocationBase)) {
+                            ModuleDumped = TRUE;
+                            DoOutputDebugString("First-region-API: Dumped module at 0x%p due to %s call.\n", AllocationBase, hookinfo->current_hook->funcname);
+                        }
+                        else if (DumpRegion(AllocationBase)) {
+                            ModuleDumped = TRUE;
+                            DoOutputDebugString("First-region-API: Dumped memory region at 0x%p due to %s call.\n", AllocationBase, hookinfo->current_hook->funcname);
+                        }
+                        else {
+                            DoOutputDebugString("First-region-API: Failed to dump memory region at 0x%p due to %s call.\n", AllocationBase, hookinfo->current_hook->funcname);
+                        }
+                    }
+                    BreakpointsSet = SetInitialBreakpoints((PVOID)AllocationBase);
+                    if (BreakpointsSet)
+                        DoOutputDebugString("First-region-API: Breakpoints set on region at 0x%p.\n", AllocationBase);
+                    else
+                        DoOutputDebugString("First-region-API: Failed to set breakpoints on 0x%p.\n", AllocationBase);
+                    break;
+                }
+            }
+#endif
+            if (g_config.verbose_dumping)
+            {
+                DoOutputDebugString("VerboseDump: Dumping calling region at 0x%p.\n", AllocationBase);
 
+                CapeMetaData->ModulePath = NULL;
+                CapeMetaData->DumpType = DATADUMP;
+                CapeMetaData->Address = AllocationBase;
+
+                if (IsDisguisedPEHeader(AllocationBase))
+                    DumpImageInCurrentProcess(AllocationBase);
+                else
+                    DumpRegion(AllocationBase);
+            }
+#ifdef CAPE_EXTRACTION
+            PTRACKEDREGION TrackedRegion = GetTrackedRegion(addr);
+            if (TrackedRegion) {
+                TrackedRegion->CanDump = 1;
+                ProcessTrackedRegion(TrackedRegion);
+            }
+#endif
+        }
 		if (hookinfo->main_caller_retaddr == 0)
 			hookinfo->main_caller_retaddr = addr;
 		else {
@@ -134,6 +190,7 @@ void api_dispatch(hook_t *h, hook_info_t *hookinfo)
 	main_caller_retaddr = hookinfo->main_caller_retaddr;
 	parent_caller_retaddr = hookinfo->parent_caller_retaddr;
 
+#ifdef CAPE_TRACE
     for (i = 0; i < ARRAYSIZE(g_config.base_on_apiname); i++) {
 		if (!g_config.base_on_apiname[i])
 			break;
@@ -152,6 +209,7 @@ void api_dispatch(hook_t *h, hook_info_t *hookinfo)
             break;
         }
     }
+#endif
 
 	for (i = 0; i < ARRAYSIZE(g_config.dump_on_apinames); i++) {
 		if (!g_config.dump_on_apinames[i])
@@ -183,6 +241,7 @@ void api_dispatch(hook_t *h, hook_info_t *hookinfo)
         }
     }
 
+#ifdef CAPE_TRACE
     if (!__called_by_hook(hookinfo->stack_pointer, hookinfo->frame_pointer) && !stricmp(h->funcname, g_config.break_on_return)) {
         DoOutputDebugString("Break-on-return: %s call detected in thread %d.\n", g_config.break_on_return, GetCurrentThreadId());
         TraceRunning = TRUE;
@@ -193,6 +252,7 @@ void api_dispatch(hook_t *h, hook_info_t *hookinfo)
         else
             BreakpointOnReturn((PVOID)hookinfo->return_address);
     }
+#endif
 }
 
 extern BOOLEAN is_ignored_thread(DWORD tid);

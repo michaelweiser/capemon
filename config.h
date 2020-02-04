@@ -105,8 +105,15 @@ struct _g_config {
 	char *excluded_apinames[EXCLUSION_MAX];
 	wchar_t *excluded_dllnames[EXCLUSION_MAX];
 	char *base_on_apiname[EXCLUSION_MAX];
+	char *first_region_api[EXCLUSION_MAX];
  	char *dump_on_apinames[EXCLUSION_MAX];
     int dump_on_api_type;
+    int region_type;
+
+    // behavioural payload extraction options
+    int compression;
+    int extraction;
+    int injection;
 
     // should we dump each process on exit/analysis timeout?
     int procdump;
@@ -118,7 +125,15 @@ struct _g_config {
     // should we terminate processes after dumping on terminate_event?
     int terminate_processes;
 
-    // To specify dump type code
+    // dump all calling regions immediately
+    int verbose_dumping;
+
+    // dump regions containing c2
+    int dump_config_region;
+
+    // prevent monitoring child processes
+    int single_process;
+
 #ifdef CAPE_TRACE
 	char *break_on_apiname;
 	char *break_on_modname;

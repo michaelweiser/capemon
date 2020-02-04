@@ -29,11 +29,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "CAPE\Debugger.h"
 
 extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
-#ifdef CAPE_INJECTION
-extern void GetThreadContextHandler(DWORD Pid, LPCONTEXT Context);
-extern void SetThreadContextHandler(DWORD Pid, const CONTEXT *Context);
-extern void ResumeThreadHandler(DWORD Pid);
-#endif
 #ifdef CAPE_TRACE
 //extern PTHREADBREAKPOINTS GetThreadBreakpoints(DWORD ThreadId);
 //extern BOOL ContextSetThreadBreakpoints(PCONTEXT ThreadContext, PTHREADBREAKPOINTS ThreadBreakpoints);
@@ -64,7 +59,7 @@ BOOLEAN is_ignored_thread(DWORD tid)
 
 	if (ret)
 		return TRUE;
-        
+
 	return FALSE;
 }
 
@@ -98,7 +93,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtQueueApcThread,
 	DWORD tid = tid_from_thread_handle(ThreadHandle);
 	NTSTATUS ret;
 
-    if (pid != GetCurrentProcessId())
+    if (!g_config.single_process && pid != GetCurrentProcessId())
         pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
 
     ret = Old_NtQueueApcThread(ThreadHandle, ApcRoutine, ApcRoutineContext, ApcStatusBlock, ApcReserved);
@@ -107,7 +102,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtQueueApcThread,
 
 	if (NT_SUCCESS(ret))
 		disable_sleep_skip();
-        
+
 	return ret;
 }
 
@@ -123,7 +118,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtQueueApcThreadEx,
 	DWORD tid = tid_from_thread_handle(ThreadHandle);
 	NTSTATUS ret;
 
-    if (pid != GetCurrentProcessId())
+    if (!g_config.single_process && pid != GetCurrentProcessId())
         pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
 
     ret = Old_NtQueueApcThreadEx(ThreadHandle, UserApcReserveHandle, ApcRoutine, ApcRoutineContext, ApcStatusBlock, ApcReserved);
@@ -132,7 +127,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtQueueApcThreadEx,
 
 	if (NT_SUCCESS(ret))
 		disable_sleep_skip();
-        
+
 	return ret;
 }
 
@@ -161,7 +156,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtCreateThread,
             InitNewThreadBreakpoints(tid);
         }
 
-        if (pid != GetCurrentProcessId())
+        if (!g_config.single_process && pid != GetCurrentProcessId())
             pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
 
         if (CreateSuspended == FALSE) {
@@ -170,9 +165,10 @@ HOOKDEF(NTSTATUS, WINAPI, NtCreateThread,
 			ResumeThread(*ThreadHandle);
 			set_lasterrors(&lasterror);
 		}
-        
-        LOQ_ntstatus("threading", "PpOii", "ThreadHandle", ThreadHandle, "ProcessHandle", ProcessHandle,
-            "ObjectAttributes", ObjectAttributes, "CreateSuspended", CreateSuspended, "ThreadId", tid);
+
+        LOQ_ntstatus("threading", "PpOiii", "ThreadHandle", ThreadHandle, "ProcessHandle", ProcessHandle,
+            "ObjectAttributes", ObjectAttributes, "CreateSuspended", CreateSuspended, "ThreadId", tid,
+			"ProcessId", pid);
 
         disable_sleep_skip();
 	}
@@ -197,7 +193,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtCreateThreadEx,
     OUT     PVOID lpBytesBuffer
 ) {
 	DWORD pid = pid_from_process_handle(ProcessHandle);
-	
+
 	NTSTATUS ret = Old_NtCreateThreadEx(hThread, DesiredAccess,
         ObjectAttributes, ProcessHandle, lpStartAddress, lpParameter,
         CreateFlags | 1, StackZeroBits, SizeOfStackCommit, SizeOfStackReserve,
@@ -214,7 +210,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtCreateThreadEx,
                 InitNewThreadBreakpoints(tid);
             }
 
-            pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
+            if (!g_config.single_process)
+                pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
 
             if (!(CreateFlags & 1)) {
 			lasterror_t lasterror;
@@ -222,9 +219,10 @@ HOOKDEF(NTSTATUS, WINAPI, NtCreateThreadEx,
 			ResumeThread(*hThread);
 			set_lasterrors(&lasterror);
 		}
-        
-        LOQ_ntstatus("threading", "Ppphi", "ThreadHandle", hThread, "ProcessHandle", ProcessHandle,
-            "StartAddress", lpStartAddress, "CreateFlags", CreateFlags, "ThreadId", tid);        
+
+        LOQ_ntstatus("threading", "Ppphii", "ThreadHandle", hThread, "ProcessHandle", ProcessHandle,
+            "StartAddress", lpStartAddress, "CreateFlags", CreateFlags, "ThreadId", tid,
+			"ProcessId", pid);
 
         disable_sleep_skip();
 	}
@@ -252,11 +250,11 @@ HOOKDEF(NTSTATUS, WINAPI, NtOpenThread,
 	}
 
 	if (ClientId) {
-		LOQ_ntstatus("threading", "Phii", "ThreadHandle", ThreadHandle, "DesiredAccess", DesiredAccess,
-			"ProcessId", pid, "ThreadId", tid);
+		LOQ_ntstatus("threading", "Phiii", "ThreadHandle", ThreadHandle, "DesiredAccess", DesiredAccess,
+			"ProcessId", pid, "ThreadId", tid, "ProcessId", pid);
 	} else {
-		LOQ_ntstatus("threading", "PhO", "ThreadHandle", ThreadHandle, "DesiredAccess", DesiredAccess,
-			"ObjectAttributes", ObjectAttributes);
+		LOQ_ntstatus("threading", "PhOi", "ThreadHandle", ThreadHandle, "DesiredAccess", DesiredAccess,
+			"ObjectAttributes", ObjectAttributes, "ProcessId", pid);
 	}
 
 	return ret;
@@ -269,21 +267,19 @@ HOOKDEF(NTSTATUS, WINAPI, NtGetContextThread,
 	ENSURE_HANDLE(ThreadHandle);
 	ENSURE_STRUCT(Context, CONTEXT);
 	DWORD tid = tid_from_thread_handle(ThreadHandle);
-    
-    NTSTATUS ret = Old_NtGetContextThread(ThreadHandle, Context);
 
+    NTSTATUS ret = Old_NtGetContextThread(ThreadHandle, Context);
+    DWORD pid = pid_from_thread_handle(ThreadHandle);
     if (Context && Context->ContextFlags & CONTEXT_CONTROL)
 #ifdef _WIN64
-		LOQ_ntstatus("threading", "pp", "ThreadHandle", ThreadHandle, "InstructionPointer", Context->Rcx);
+		LOQ_ntstatus("threading", "ppi", "ThreadHandle", ThreadHandle, "InstructionPointer", Context->Rcx,
+		"ProcessId", pid);
 #else
-		LOQ_ntstatus("threading", "pp", "ThreadHandle", ThreadHandle, "InstructionPointer", Context->Eax);
+		LOQ_ntstatus("threading", "ppi", "ThreadHandle", ThreadHandle, "InstructionPointer", Context->Eax,
+		"ProcessId", pid);
 #endif
 	else
-		LOQ_ntstatus("threading", "p", "ThreadHandle", ThreadHandle);
-#ifdef CAPE_INJECTION
-	DWORD pid = pid_from_thread_handle(ThreadHandle);
-    GetThreadContextHandler(pid, Context);
-#endif
+		LOQ_ntstatus("threading", "pi", "ThreadHandle", ThreadHandle, "ProcessId", pid);
     return ret;
 }
 
@@ -305,10 +301,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtSetContextThread,
 #endif
 	else
 		LOQ_ntstatus("threading", "p", "ThreadHandle", ThreadHandle);
-#ifdef CAPE_INJECTION
-    SetThreadContextHandler(pid, Context);
-#endif
-    if (pid != GetCurrentProcessId())
+    if (!g_config.single_process && pid != GetCurrentProcessId())
         pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
 
     return ret;
@@ -328,13 +321,16 @@ HOOKDEF(NTSTATUS, WINAPI, NtSuspendThread,
 		tid == g_logwatcher_thread_id || tid == g_procname_watcher_thread_id)) {
 		ret = 0;
 		*PreviousSuspendCount = 0;
-		LOQ_ntstatus("threading", "pLs", "ThreadHandle", ThreadHandle,
-			"SuspendCount", PreviousSuspendCount, "Alert", "Attempted to suspend cuckoomon thread");
+		LOQ_ntstatus("threading", "pLsi", "ThreadHandle", ThreadHandle,
+			"SuspendCount", PreviousSuspendCount, "Alert", "Attempted to suspend cuckoomon thread",
+			"ProcessId", pid);
 	}
 	else {
-		pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
+		if (!g_config.single_process)
+            pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
 		ret = Old_NtSuspendThread(ThreadHandle, PreviousSuspendCount);
-		LOQ_ntstatus("threading", "pLi", "ThreadHandle", ThreadHandle, "SuspendCount", PreviousSuspendCount, "ThreadId", tid);
+		LOQ_ntstatus("threading", "pLii", "ThreadHandle", ThreadHandle, "SuspendCount", PreviousSuspendCount, "ThreadId", tid,
+		"ProcessId", pid);
     }
     return ret;
 }
@@ -347,14 +343,11 @@ HOOKDEF(NTSTATUS, WINAPI, NtResumeThread,
 	DWORD tid = tid_from_thread_handle(ThreadHandle);
 	NTSTATUS ret;
 	ENSURE_ULONG(SuspendCount);
-#ifdef CAPE_INJECTION
-    ResumeThreadHandler(pid);
-#endif
     if (pid != GetCurrentProcessId())
         pipe("RESUME:%d,%d", pid, tid);
 
     ret = Old_NtResumeThread(ThreadHandle, SuspendCount);
-    LOQ_ntstatus("threading", "pI", "ThreadHandle", ThreadHandle, "SuspendCount", SuspendCount);
+    LOQ_ntstatus("threading", "pIi", "ThreadHandle", ThreadHandle, "SuspendCount", SuspendCount, "ProcessId", pid);
     return ret;
 }
 
@@ -379,11 +372,12 @@ HOOKDEF(NTSTATUS, WINAPI, NtTerminateThread,
 		tid == g_watchdog_thread_id || tid == g_terminate_event_thread_id || tid == g_log_thread_id ||
 		tid == g_logwatcher_thread_id || tid == g_procname_watcher_thread_id)) {
 		ret = 0;
-		LOQ_ntstatus("threading", "phs", "ThreadHandle", ThreadHandle, "ExitStatus", ExitStatus, "Alert", "Attempted to kill cuckoomon thread");
+		LOQ_ntstatus("threading", "phsi", "ThreadHandle", ThreadHandle, "ExitStatus", ExitStatus, "Alert", "Attempted to kill cuckoomon thread",
+		"ProcessId", pid);
 		return ret;
 	}
 
-	LOQ_ntstatus("threading", "phi", "ThreadHandle", ThreadHandle, "ExitStatus", ExitStatus, "ThreadId", tid);
+	LOQ_ntstatus("threading", "phii", "ThreadHandle", ThreadHandle, "ExitStatus", ExitStatus, "ThreadId", tid, "ProcessId", pid);
 
     ret = Old_NtTerminateThread(ThreadHandle, ExitStatus);
 
@@ -451,7 +445,8 @@ HOOKDEF(HANDLE, WINAPI, CreateRemoteThread,
 
 	if (ret != NULL) {
         if (pid != GetCurrentProcessId())
-            pipe("PROCESS:%d:%d,%d", is_suspended(pid, *lpThreadId), pid, *lpThreadId);
+            if (!g_config.single_process)
+                pipe("PROCESS:%d:%d,%d", is_suspended(pid, *lpThreadId), pid, *lpThreadId);
         else if (DEBUGGER_ENABLED && !called_by_hook()) {
             DoOutputDebugString("CreateRemoteThread: Initialising breakpoints for (local) thread %d.\n", *lpThreadId);
             InitNewThreadBreakpoints(*lpThreadId);
@@ -469,7 +464,7 @@ HOOKDEF(HANDLE, WINAPI, CreateRemoteThread,
 
 	LOQ_nonnull("threading", "ppphI", "ProcessHandle", hProcess, "StartRoutine", lpStartAddress,
         "Parameter", lpParameter, "CreationFlags", dwCreationFlags,
-        "ThreadId", lpThreadId);
+        "ThreadId", lpThreadId, "ProcessId", pid);
 
     return ret;
 }
@@ -504,7 +499,8 @@ HOOKDEF(NTSTATUS, WINAPI, RtlCreateUserThread,
 	if (NT_SUCCESS(ret) && ClientId && ThreadHandle) {
         DWORD tid = tid_from_thread_handle(ThreadHandle);
         if (pid != GetCurrentProcessId())
-            pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
+            if (!g_config.single_process)
+                pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
         else if (DEBUGGER_ENABLED && !called_by_hook()) {
             DoOutputDebugString("RtlCreateUserThread: Initialising breakpoints for (local) thread %d.\n", tid);
             InitNewThreadBreakpoints(tid);
@@ -535,15 +531,15 @@ HOOKDEF(NTSTATUS, WINAPI, NtSetInformationThread,
 	NTSTATUS ret;
     ENSURE_HANDLE(ThreadHandle);
     DWORD tid = tid_from_thread_handle(ThreadHandle);
-    
+
     ret = Old_NtSetInformationThread(ThreadHandle, ThreadInformationClass, ThreadInformation, ThreadInformationLength);
 
     if (ThreadInformationClass == ThreadHideFromDebugger)
-        LOQ_ntstatus("threading", "pii", "ThreadHandle", ThreadHandle, 
+        LOQ_ntstatus("threading", "pii", "ThreadHandle", ThreadHandle,
             "ThreadInformationClass", ThreadInformationClass,
             "ThreadId", tid);
-    
-    return ret;    
+
+    return ret;
 }
 
 HOOKDEF(NTSTATUS, WINAPI, NtQueryInformationThread,
@@ -556,14 +552,14 @@ HOOKDEF(NTSTATUS, WINAPI, NtQueryInformationThread,
 	NTSTATUS ret;
     ENSURE_HANDLE(ThreadHandle);
     DWORD tid = tid_from_thread_handle(ThreadHandle);
-    
+
     ret = Old_NtQueryInformationThread(ThreadHandle, ThreadInformationClass, ThreadInformation, ThreadInformationLength, ReturnLength);
-    
-    LOQ_ntstatus("threading", "pibi", "ThreadHandle", ThreadHandle, 
+
+    LOQ_ntstatus("threading", "pibi", "ThreadHandle", ThreadHandle,
         "ThreadInformationClass", ThreadInformationClass,
         "ThreadInformation", ThreadInformationLength, ThreadInformation,
         "ThreadId", tid);
-    
+
     return ret;
 }
 

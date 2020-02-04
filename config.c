@@ -290,6 +290,25 @@ int read_config(void)
                 g_config.dump_on_api_type = (unsigned int)strtoul(value, NULL, 0);
             }
 #ifdef CAPE_TRACE
+			else if (!strcmp(key, "first-region-api")) {
+				unsigned int x = 0;
+				char *p2;
+				p = value;
+				while (p && x < EXCLUSION_MAX) {
+					p2 = strchr(p, ':');
+					if (p2) {
+						*p2 = '\0';
+					}
+					g_config.first_region_api[x++] = strdup(p);
+                    DoOutputDebugString("Added '%s' to first-region-API list.\n", p);
+					if (p2 == NULL)
+						break;
+					p = p2 + 1;
+				}
+			}
+			else if (!strcmp(key, "region-type")) {
+                g_config.region_type = (unsigned int)strtoul(value, NULL, 0);
+            }
             else if (!strcmp(key, "file-offsets")) {
 				g_config.file_offsets = value[0] == '1';
                 if (g_config.file_offsets)
@@ -328,7 +347,26 @@ int read_config(void)
                     EntryPointRegister = 1;
                 }
                 else {
+                    int delta;
+                    p = strchr(value, '+');
+                    if (p) {
+                        delta = strtoul(p+1, NULL, 0);
+                        DoOutputDebugString("Config: Delta 0x%x.\n", delta);
+                        *p = '\0';
+                    }
+                    else {
+                        p = strchr(value, '-');
+                        if (p) {
+                            delta = - strtoul(p+1, NULL, 0);
+                            DoOutputDebugString("Config: Delta 0x%x.\n", delta);
+                            *p = '\0';
+                        }
+                    }
                     bp0 = (PVOID)(DWORD_PTR)strtoul(value, NULL, 0);
+                    if (delta) {
+                        DoOutputDebugString("Config: bp0 was 0x%x.\n", bp0);
+                        bp0 = (PVOID)(DWORD_PTR)((int)bp0 + delta);
+                    }
                     DoOutputDebugString("Config: bp0 set to 0x%x.\n", bp0);
                 }
 			}
@@ -480,6 +518,36 @@ int read_config(void)
                     DoOutputDebugString("Terminate processes on terminate_event enabled.\n");
                 else
                     DoOutputDebugString("Terminate processes on terminate_event disabled.\n");
+			}
+            else if (!strcmp(key, "compression")) {
+				g_config.compression = value[0] == '1';
+                if (g_config.compression)
+                    DoOutputDebugString("Capture of compressed payloads enabled.\n");
+			}
+            else if (!strcmp(key, "extraction")) {
+				g_config.extraction = value[0] == '1';
+                if (g_config.extraction)
+                    DoOutputDebugString("Capture of extracted payloads enabled.\n");
+			}
+            else if (!strcmp(key, "injection")) {
+				g_config.injection = value[0] == '1';
+                if (g_config.injection)
+                    DoOutputDebugString("Capture of injected payloads enabled.\n");
+			}
+            else if (!strcmp(key, "verbose-dumping")) {
+				g_config.verbose_dumping = value[0] == '1';
+                if (g_config.verbose_dumping)
+                    DoOutputDebugString("Verbose dumping enabled.\n");
+			}
+            else if (!strcmp(key, "dump-config-region")) {
+				g_config.dump_config_region = value[0] == '1';
+                if (g_config.dump_config_region)
+                    DoOutputDebugString("Dump config region enabled.\n");
+			}
+            else if (!strcmp(key, "single-process")) {
+				g_config.single_process = value[0] == '1';
+                if (g_config.single_process)
+                    DoOutputDebugString("Monitoring child processes disabled.\n");
 			}
             else DoOutputDebugString("CAPE debug - unrecognised key %s.\n", key);
 		}

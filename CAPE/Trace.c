@@ -25,7 +25,7 @@ along with this program.If not, see <http://www.gnu.org/licenses/>.
 #define MAX_INSTRUCTIONS 0x10
 #define SINGLE_STEP_LIMIT 0x4000  // default unless specified in web ui
 #define CHUNKSIZE 0x10 * MAX_INSTRUCTIONS
-#define RVA_LIMIT 0x100000
+#define RVA_LIMIT 0x200000
 #define DoClearZeroFlag 1
 #define DoSetZeroFlag   2
 #define PrintEAX        3
@@ -33,7 +33,7 @@ along with this program.If not, see <http://www.gnu.org/licenses/>.
 extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
 extern void DoOutputErrorString(_In_ LPCTSTR lpOutputString, ...);
 extern void DebuggerOutput(_In_ LPCTSTR lpOutputString, ...);
-extern int DumpModuleInCurrentProcess(LPVOID ModuleBase);
+extern int DumpImageInCurrentProcess(LPVOID ImageBase);
 extern int DumpMemory(LPVOID Buffer, SIZE_T Size);
 extern char *convert_address_to_dll_name_and_offset(ULONG_PTR addr, unsigned int *offset);
 extern BOOL is_in_dll_range(ULONG_PTR addr);
@@ -65,6 +65,11 @@ BOOL DoSetSingleStepMode(int Register, PCONTEXT Context, PVOID Handler)
     if (!StepOverRegister)
         StepOverRegister = Register;
     return SetSingleStepMode(Context, Trace);
+}
+
+void ActionDispatch()
+{
+	return;
 }
 
 BOOL Trace(struct _EXCEPTION_POINTERS* ExceptionInfo)
@@ -486,6 +491,32 @@ BOOL Trace(struct _EXCEPTION_POINTERS* ExceptionInfo)
         DebuggerOutput("0x%x (%02d) %-20s %-6s%-4s%-30s", (unsigned int)CIP, DecodedInstruction.size, (char*)DecodedInstruction.instructionHex.p, (char*)DecodedInstruction.mnemonic.p, DecodedInstruction.operands.length != 0 ? " " : "", (char*)DecodedInstruction.operands.p);
 #endif
 
+    if (!stricmp(Action0, "dumpebx"))
+    {
+        if (!stricmp(DumpSizeString, "eax"))
+        {
+#ifdef _WIN64
+            DumpSize = ExceptionInfo->ContextRecord->Rax;
+            DumpAddress = (PVOID)ExceptionInfo->ContextRecord->Rbx;
+#else
+            DumpSize = ExceptionInfo->ContextRecord->Eax;
+            DumpAddress = (PVOID)ExceptionInfo->ContextRecord->Ebx;
+#endif
+            if (g_config.dumptype0)
+                CapeMetaData->DumpType = g_config.dumptype0;
+            else
+                CapeMetaData->DumpType = EXTRACTION_PE;
+
+            if (DumpMemory(DumpAddress, DumpSize))
+            {
+                DoOutputDebugString("Trace: Dumped config region at 0x%p size 0x%x.\n", DumpAddress, DumpSize);
+                return TRUE;
+            }
+            else
+                DoOutputDebugString("Trace: Failed to dump config region at 0x%p.\n", DumpAddress);
+        }
+    }
+
     if (Instruction0 && !stricmp(DecodedInstruction.mnemonic.p, Instruction0))
     {
         if (!stricmp(Action0, "ClearZeroFlag"))
@@ -503,7 +534,7 @@ BOOL Trace(struct _EXCEPTION_POINTERS* ExceptionInfo)
             FlipZeroFlag(ExceptionInfo->ContextRecord);
             DebuggerOutput("\nTrace: %s detected, flipping zero flag (action0).\n", Instruction0);
         }
-        if (!stricmp(Action0, "ClearSignFlag"))
+        else if (!stricmp(Action0, "ClearSignFlag"))
         {
             ClearSignFlag(ExceptionInfo->ContextRecord);
             DebuggerOutput("\nTrace: %s detected, clearing Sign flag (action0).\n", Instruction0);
@@ -522,11 +553,11 @@ BOOL Trace(struct _EXCEPTION_POINTERS* ExceptionInfo)
         else if (!stricmp(Action0, "PrintEAX"))
         {
             if (ExceptionInfo->ContextRecord->Eax)
-                DebuggerOutput("nTrace: Print EAX -> 0x%x.\n", ExceptionInfo->ContextRecord->Eax);
+                DebuggerOutput("Trace: Print EAX -> 0x%x.\n", ExceptionInfo->ContextRecord->Eax);
         }
 #endif
         else
-            DebuggerOutput("nTrace: Unrecognised action0! (%d)\n", Action0);
+            DebuggerOutput("Trace: Unrecognised action0! (%s)\n", Action0);
 
         Instruction0 = NULL;
     }
@@ -613,9 +644,9 @@ BOOL StepOutCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINTERS
                 CapeMetaData->DumpType = EXTRACTION_PE;
 
             if (DumpMemory(DumpAddress, DumpSize))
-                DoOutputDebugString("ConfigCallback: Dumped config region at 0x%p size 0x%x.\n", DumpAddress, DumpSize);
+                DoOutputDebugString("StepOutCallback: Dumped config region at 0x%p size 0x%x.\n", DumpAddress, DumpSize);
             else
-                DoOutputDebugString("ConfigCallback: Failed to dump config region at 0x%p.\n", DumpAddress);
+                DoOutputDebugString("StepOutCallback: Failed to dump config region at 0x%p.\n", DumpAddress);
         }
     }
 
@@ -631,7 +662,7 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
     _DecodeResult Result;
     _OffsetType Offset = 0;
     _DecodedInst DecodedInstruction;
-    unsigned int DllRVA, DecodedInstructionsCount = 0;
+    unsigned int DllRVA, bp, DecodedInstructionsCount = 0;
 
 	if (pBreakpointInfo == NULL)
 	{
@@ -646,6 +677,25 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
 	}
 
     BreakpointsHit = TRUE;
+
+    for (bp = 0; bp < NUMBER_OF_DEBUG_REGISTERS; bp++)
+    {
+        if (pBreakpointInfo->Register == bp)
+        {
+            TraceDepthCount = 0;
+            if (bp == 0 && ((DWORD_PTR)pBreakpointInfo->Address != ExceptionInfo->ContextRecord->Dr0))
+                DoOutputDebugString("BreakpointCallback: Breakpoint 0 hit at 0x%p\n", pBreakpointInfo->Address);
+
+            if (bp == 1 && ((DWORD_PTR)pBreakpointInfo->Address != ExceptionInfo->ContextRecord->Dr1))
+                DoOutputDebugString("BreakpointCallback: Breakpoint 1 hit at 0x%p\n", pBreakpointInfo->Address);
+
+            if (bp == 2 && ((DWORD_PTR)pBreakpointInfo->Address != ExceptionInfo->ContextRecord->Dr2))
+                DoOutputDebugString("BreakpointCallback: Breakpoint 2 hit at 0x%p\n", pBreakpointInfo->Address);
+
+            if (bp == 3 && ((DWORD_PTR)pBreakpointInfo->Address != ExceptionInfo->ContextRecord->Dr3))
+                DoOutputDebugString("BreakpointCallback: Breakpoint 3 hit at 0x%p\n", pBreakpointInfo->Address);
+        }
+    }
 
 #ifdef _WIN64
     CIP = (PVOID)ExceptionInfo->ContextRecord->Rip;
@@ -854,37 +904,73 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
             TraceDepthCount--;
     }
 
+    if (!stricmp(Action0, "dumpebx"))
+    {
+        if (!stricmp(DumpSizeString, "eax"))
+        {
+            PVOID CallingModule = GetAllocationBase(CIP);
+#ifdef _WIN64
+            DumpSize = ExceptionInfo->ContextRecord->Rax;
+            DumpAddress = (PVOID)ExceptionInfo->ContextRecord->Rbx;
+#else
+            DumpSize = ExceptionInfo->ContextRecord->Eax;
+            DumpAddress = (PVOID)ExceptionInfo->ContextRecord->Ebx;
+#endif
+            if (g_config.dumptype0)
+                CapeMetaData->DumpType = g_config.dumptype0;
+            else
+                CapeMetaData->DumpType = EXTRACTION_PE;
+
+            if (DumpMemory(DumpAddress, DumpSize))
+                DoOutputDebugString("BreakpointCallback: Dumped config region at 0x%p size 0x%x.\n", DumpAddress, DumpSize);
+            else
+                DoOutputDebugString("BreakpointCallback: Failed to dump config region at 0x%p.\n", DumpAddress);
+
+            //if (g_config.region_type)
+            //{
+            //    CapeMetaData->DumpType = g_config.region_type;
+            //    if (DumpPEsInRange(CallingModule, 1))
+            //        DoOutputDebugString("BreakpointCallback: Dumped breaking module at 0x%p.\n", CallingModule);
+            //    else
+            //        DoOutputDebugString("BreakpointCallback: Failed to dump breaking module at 0x%p.\n", CallingModule);
+            //}
+
+            StepOverExecutionBreakpoint(ExceptionInfo->ContextRecord, pBreakpointInfo);
+            return TRUE;
+        }
+    }
+
     if (Instruction0 && !stricmp(DecodedInstruction.mnemonic.p, Instruction0))
     {
         if (!stricmp(Action0, "ClearZeroFlag"))
         {
             ClearZeroFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nTrace: %s detected, clearing zero flag (action0).\n", Instruction0);
+            DebuggerOutput("\nBreakpointCallback: %s detected, clearing zero flag (action0).\n", Instruction0);
         }
         else if (!stricmp(Action0, "SetZeroFlag"))
         {
             SetZeroFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nTrace: %s detected, setting zero flag (action0).\n", Instruction0);
+            DebuggerOutput("\nBreakpointCallback: %s detected, setting zero flag (action0).\n", Instruction0);
         }
         else if (!stricmp(Action0, "FlipZeroFlag"))
         {
             FlipZeroFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nTrace: %s detected, flipping zero flag (action0).\n", Instruction0);
+            DebuggerOutput("\nBreakpointCallback: %s detected, flipping zero flag (action0).\n", Instruction0);
         }
-        if (!stricmp(Action0, "ClearSignFlag"))
+        else if (!stricmp(Action0, "ClearSignFlag"))
         {
             ClearSignFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nTrace: %s detected, clearing Sign flag (action0).\n", Instruction0);
+            DebuggerOutput("\nBreakpointCallback: %s detected, clearing Sign flag (action0).\n", Instruction0);
         }
         else if (!stricmp(Action0, "SetSignFlag"))
         {
             SetSignFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nTrace: %s detected, setting Sign flag (action0).\n", Instruction0);
+            DebuggerOutput("\nBreakpointCallback: %s detected, setting Sign flag (action0).\n", Instruction0);
         }
         else if (!stricmp(Action0, "FlipSignFlag"))
         {
             FlipSignFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nTrace: %s detected, flipping Sign flag (action0).\n", Instruction0);
+            DebuggerOutput("\nBreakpointCallback: %s detected, flipping Sign flag (action0).\n", Instruction0);
         }
 #ifndef _WIN64
         else if (!stricmp(Action0, "PrintEAX"))
@@ -893,8 +979,21 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
                 DebuggerOutput("\nBreakpointCallback: Print EAX -> 0x%x.", ExceptionInfo->ContextRecord->Eax);
         }
 #endif
+        else if (!stricmp(Action0, "Dump"))
+        {
+            PVOID CallingModule = GetAllocationBase(CIP);
+            if (g_config.dumptype0)
+                CapeMetaData->DumpType = g_config.dumptype0;
+            else
+                CapeMetaData->DumpType = EXTRACTION_PE;
+
+            if (DumpImageInCurrentProcess(CallingModule))
+                DoOutputDebugString("BreakpointCallback: Dumped breaking module at 0x%p.\n", CallingModule);
+            else
+                DoOutputDebugString("BreakpointCallback: Failed to dump breaking module at 0x%p.\n", CallingModule);
+        }
         else
-            DebuggerOutput("\nBreakpointCallback: Unrecognised action0! (%d)", Action0);
+            DebuggerOutput("\nBreakpointCallback: Unrecognised action0! (%s)", Action0);
 
         Instruction0 = NULL;
     }
@@ -904,13 +1003,55 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
         if (!stricmp(Action1, "ClearZeroFlag"))
         {
             ClearZeroFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nBreakpointCallback: %s detected, clearing zero flag (action1).", Instruction1);
+            DebuggerOutput("\nBreakpointCallback: %s detected, clearing zero flag (action1).\n", Instruction1);
         }
         else if (!stricmp(Action1, "SetZeroFlag"))
         {
             SetZeroFlag(ExceptionInfo->ContextRecord);
-            DebuggerOutput("\nBreakpointCallback: %s detected, setting zero flag (action1).", Instruction1);
+            DebuggerOutput("\nBreakpointCallback: %s detected, setting zero flag (action1).\n", Instruction1);
         }
+        else if (!stricmp(Action1, "FlipZeroFlag"))
+        {
+            FlipZeroFlag(ExceptionInfo->ContextRecord);
+            DebuggerOutput("\nBreakpointCallback: %s detected, flipping zero flag (action1).\n", Instruction1);
+        }
+        else if (!stricmp(Action1, "ClearSignFlag"))
+        {
+            ClearSignFlag(ExceptionInfo->ContextRecord);
+            DebuggerOutput("\nBreakpointCallback: %s detected, clearing Sign flag (action1).\n", Instruction1);
+        }
+        else if (!stricmp(Action1, "SetSignFlag"))
+        {
+            SetSignFlag(ExceptionInfo->ContextRecord);
+            DebuggerOutput("\nBreakpointCallback: %s detected, setting Sign flag (action1).\n", Instruction1);
+        }
+        else if (!stricmp(Action1, "FlipSignFlag"))
+        {
+            FlipSignFlag(ExceptionInfo->ContextRecord);
+            DebuggerOutput("\nBreakpointCallback: %s detected, flipping Sign flag (action1).\n", Instruction1);
+        }
+        else if (!stricmp(Action1, "Dump"))
+        {
+            PVOID CallingModule = GetAllocationBase(CIP);
+            if (g_config.dumptype0)
+                CapeMetaData->DumpType = g_config.dumptype0;
+            else
+                CapeMetaData->DumpType = EXTRACTION_PE;
+
+            if (DumpImageInCurrentProcess(CallingModule))
+                DoOutputDebugString("BreakpointCallback: Dumped breaking module at 0x%p.\n", CallingModule);
+            else
+                DoOutputDebugString("BreakpointCallback: Failed to dump breaking module at 0x%p.\n", CallingModule);
+        }
+#ifndef _WIN64
+        else if (!stricmp(Action1, "PrintEAX"))
+        {
+            if (ExceptionInfo->ContextRecord->Eax)
+                DebuggerOutput("\nBreakpointCallback: Print EAX -> 0x%x.", ExceptionInfo->ContextRecord->Eax);
+        }
+#endif
+        else
+            DebuggerOutput("\nBreakpointCallback: Unrecognised action1! (%s)", Action1);
 
         Instruction1 = NULL;
     }
@@ -1088,7 +1229,15 @@ BOOL SetInitialBreakpoints(PVOID ImageBase)
         PVOID Callback;
 
         if (g_config.file_offsets)
+        {
+            if (!IsDisguisedPEHeader(ImageBase))
+            {
+                DoOutputDebugString("SetInitialBreakpoints: File offsets cannot be applied to non-PE image at 0x%p.\n", ImageBase);
+                BreakpointsSet = FALSE;
+                return FALSE;
+            }
             BreakpointVA = FileOffsetToVA((DWORD_PTR)ImageBase, (DWORD_PTR)bp0);
+        }
         else
         {
             if ((SIZE_T)bp0 > RVA_LIMIT)

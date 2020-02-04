@@ -47,6 +47,7 @@ extern ULONG_PTR base_of_dll_of_interest;
 #ifdef CAPE_TRACE
 extern BOOL SetInitialBreakpoints(PVOID ImageBase);
 #endif
+extern PCHAR ScyllaGetExportDirectory(PVOID Address);
 
 void disable_tail_call_optimization(void)
 {
@@ -110,6 +111,7 @@ static hook_t g_hooks[] = {
 	HOOK_SPECIAL(ole32, CoCreateInstanceEx),
 	HOOK_SPECIAL(ole32, CoGetClassObject),
 
+	//HOOK(ntdll, KiUserExceptionDispatcher),
 	HOOK_SPECIAL(ntdll, RtlDispatchException),
 	HOOK_NOTAIL(ntdll, NtRaiseException, 3),
 
@@ -356,13 +358,15 @@ static hook_t g_hooks[] = {
     HOOK(ntdll, NtQueryInformationThread),
     HOOK(ntdll, NtYieldExecution),
 
-    // Misc Hooks
+    // Memory copy hooks
+    //HOOK(ntdll, RtlMoveMemory),
 
-    // for debugging only
-	//HOOK(kernel32, GetLastError),
+    // Misc Hooks
 #ifndef _WIN64
 	HOOK(ntdll, memcpy),
 #endif
+	HOOK(kernel32, OutputDebugStringA),
+	HOOK(kernel32, OutputDebugStringW),
 	HOOK(kernel32, HeapCreate),
 	HOOK(msvcrt, memcpy),
     HOOK(msvcrt, srand),
@@ -607,6 +611,9 @@ static hook_t g_hooks[] = {
 
 	HOOK(crypt32, CryptDecodeObjectEx),
 	HOOK(crypt32, CryptImportPublicKeyInfo),
+	HOOK(ncrypt, NCryptImportKey),
+	HOOK(ncrypt, NCryptDecrypt),
+	HOOK(ncrypt, NCryptEncrypt),
 
 	// needed due to the DLL being delay-loaded in some cases
 	HOOK(cryptsp, CryptAcquireContextA),
@@ -636,9 +643,7 @@ static hook_t g_hooks[] = {
 
 void set_hooks_dll(const wchar_t *library)
 {
-	int i;
-
-	for (i = 0; i < ARRAYSIZE(g_hooks); i++) {
+	for (unsigned int i = 0; i < ARRAYSIZE(g_hooks); i++) {
         if(!wcsicmp(g_hooks[i].library, library)) {
 			if (hook_api(&g_hooks[i], g_config.hook_type) < 0)
 				pipe("WARNING:Unable to hook %z", g_hooks[i].funcname);
@@ -646,6 +651,20 @@ void set_hooks_dll(const wchar_t *library)
     }
 }
 
+void set_hooks_by_export_directory(const wchar_t *exportdirectory, const wchar_t *library)
+{
+	for (unsigned int i = 0; i < ARRAYSIZE(g_hooks); i++) {
+        if(!wcsicmp(g_hooks[i].library, exportdirectory)) {
+			hook_t hook = g_hooks[i];
+            hook.library = library;
+            hook.exportdirectory = exportdirectory;
+            hook.addr = NULL;
+            hook.is_hooked = 0;
+            if (hook_api(&hook, g_config.hook_type) < 0)
+				pipe("WARNING:Unable to hook %z", g_hooks[i].funcname);
+        }
+    }
+}
 extern void invalidate_regions_for_hook(const hook_t *hook);
 
 void revalidate_all_hooks(void)
@@ -705,12 +724,38 @@ VOID CALLBACK New_DllLoadNotification(
 #endif
         }
         else {
+
+            SIZE_T numconverted, size;
+            WCHAR exportdirectory_w[MAX_PATH];
+            char* exportdirectory;
+
             // unoptimized, but easy
             add_all_dlls_to_dll_ranges();
 
             dllname = get_dll_basename(&library);
             set_hooks_dll(dllname);
 
+            exportdirectory = ScyllaGetExportDirectory(NotificationData->Loaded.DllBase);
+            if (exportdirectory) {
+                size = strlen(exportdirectory);
+                mbstowcs_s(&numconverted, exportdirectory_w, MAX_PATH, exportdirectory, size+1);
+                for (unsigned int i=0; i<numconverted; i++) {
+                    if (!wcsnicmp(exportdirectory_w+i, L".dll", 4))
+                        memset(exportdirectory_w+i, 0, sizeof(WCHAR));
+                }
+                if (wcsicmp(dllname, exportdirectory_w))
+                    set_hooks_by_export_directory(exportdirectory_w, dllname);
+            }
+
+#ifdef CAPE_TRACE
+            //if (g_config.break_on_apiname && g_config.break_on_modname) {
+            //    dllname = (char*)malloc(MAX_PATH);
+            //    WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, (LPCWSTR)dllname_w, (int)wcslen(dllname_w)+1, dllname, MAX_PATH, NULL, NULL);
+            //    if (!stricmp(dllname, g_config.break_on_modname)) {
+            //        SetInitialBreakpoints(NotificationData->Loaded.DllBase);
+            //    }
+            //}
+#endif
             DoOutputDebugString("DLL loaded at 0x%p: %ws (0x%x bytes).\n", NotificationData->Loaded.DllBase, library.Buffer, NotificationData->Loaded.SizeOfImage);
         }
 	}
@@ -1096,7 +1141,7 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD dwReason, LPVOID lpReserved)
 #endif
 
 		// obtain all protected pids
-        pipe2(pids, &length, "GETPIDS");
+        pipe2(pids, &length, "GETPIDS:");
         for (i = 0; i < length / sizeof(pids[0]); i++) {
             add_protected_pid(pids[i]);
         }
