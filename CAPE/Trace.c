@@ -97,13 +97,13 @@ BOOL Trace(struct _EXCEPTION_POINTERS* ExceptionInfo)
     DecodeType = Decode32Bits;
 #endif
 
-    //if (!is_in_dll_range((ULONG_PTR)CIP) || TraceAll || InsideMonitor(NULL, CIP) || g_config.trace_into_api[0])
+    //if (!is_in_dll_range((ULONG_PTR)CIP) || TraceAll || InsideHook(NULL, CIP) || g_config.trace_into_api[0])
     if (!is_in_dll_range((ULONG_PTR)CIP) || TraceAll || g_config.break_on_apiname)
     {
         FilterTrace = FALSE;
         StepCount++;
     }
-    else if (InsideMonitor(NULL, CIP) || inside_hook(CIP) || is_in_dll_range((ULONG_PTR)CIP))
+    else if (InsideHook(NULL, CIP) || inside_hook(CIP) || is_in_dll_range((ULONG_PTR)CIP))
         FilterTrace = TRUE;
 
     //MODULEINFO ModuleInfo;
@@ -263,7 +263,6 @@ BOOL Trace(struct _EXCEPTION_POINTERS* ExceptionInfo)
             else if (!strncmp(DecodedInstruction.operands.p, "DWORD [FS:0xc0]", 15))
             {
                 DebuggerOutput("0x%x (%02d) %-20s %-6s%-4s%-30s", CIP, DecodedInstruction.size, (char*)DecodedInstruction.instructionHex.p, (char*)DecodedInstruction.mnemonic.p, DecodedInstruction.operands.length != 0 ? " " : "", (char*)DecodedInstruction.operands.p);
-                DebuggerOutput("\nGWATAMALA");
                 ForceStepOver = TRUE;
             }
             else
@@ -619,7 +618,7 @@ BOOL StepOutCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINTERS
 
     if (!is_in_dll_range((ULONG_PTR)CIP) || TraceAll || g_config.break_on_apiname)
         FilterTrace = FALSE;
-    else if (InsideMonitor(NULL, CIP) || is_in_dll_range((ULONG_PTR)CIP))
+    else if (InsideHook(NULL, CIP) || is_in_dll_range((ULONG_PTR)CIP))
         FilterTrace = TRUE;
 
     DebuggerOutput("StepOutCallback: Breakpoint hit by instruction at 0x%p\n", CIP);
@@ -664,7 +663,9 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
     _DecodedInst DecodedInstruction;
     unsigned int DllRVA, bp, DecodedInstructionsCount = 0;
 
-	if (pBreakpointInfo == NULL)
+	DoOutputDebugString("BreakpointCallback executed.\n");
+
+    if (pBreakpointInfo == NULL)
 	{
 		DoOutputDebugString("BreakpointCallback executed with pBreakpointInfo NULL.\n");
 		return FALSE;
@@ -697,6 +698,8 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
         }
     }
 
+	DoOutputDebugString("BreakpointCallback should have printed breakpoint number.\n");
+
 #ifdef _WIN64
     CIP = (PVOID)ExceptionInfo->ContextRecord->Rip;
     DecodeType = Decode64Bits;
@@ -706,7 +709,7 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
 #endif
     if (!is_in_dll_range((ULONG_PTR)CIP) || TraceAll || g_config.break_on_apiname)
         FilterTrace = FALSE;
-    else if (InsideMonitor(NULL, CIP) || is_in_dll_range((ULONG_PTR)CIP))
+    else if (InsideHook(NULL, CIP) || is_in_dll_range((ULONG_PTR)CIP))
         FilterTrace = TRUE;
 
     //if (CIP == bp0 || CIP == bp1 || CIP == bp2 || CIP == bp3)
@@ -934,6 +937,33 @@ BOOL BreakpointCallback(PBREAKPOINTINFO pBreakpointInfo, struct _EXCEPTION_POINT
             //    else
             //        DoOutputDebugString("BreakpointCallback: Failed to dump breaking module at 0x%p.\n", CallingModule);
             //}
+
+            StepOverExecutionBreakpoint(ExceptionInfo->ContextRecord, pBreakpointInfo);
+            return TRUE;
+        }
+    }
+
+    if (!stricmp(Action0, "dumpedx"))
+    {
+        if (!stricmp(DumpSizeString, "ecx"))
+        {
+            PVOID CallingModule = GetAllocationBase(CIP);
+#ifdef _WIN64
+            DumpSize = ExceptionInfo->ContextRecord->Rcx;
+            DumpAddress = (PVOID)ExceptionInfo->ContextRecord->Rdx;
+#else
+            DumpSize = ExceptionInfo->ContextRecord->Ecx;
+            DumpAddress = (PVOID)ExceptionInfo->ContextRecord->Edx;
+#endif
+            if (g_config.dumptype0)
+                CapeMetaData->DumpType = g_config.dumptype0;
+            else
+                CapeMetaData->DumpType = EXTRACTION_PE;
+
+            if (DumpMemory(DumpAddress, DumpSize))
+                DoOutputDebugString("BreakpointCallback: Dumped config region at 0x%p size 0x%x.\n", DumpAddress, DumpSize);
+            else
+                DoOutputDebugString("BreakpointCallback: Failed to dump config region at 0x%p.\n", DumpAddress);
 
             StepOverExecutionBreakpoint(ExceptionInfo->ContextRecord, pBreakpointInfo);
             return TRUE;

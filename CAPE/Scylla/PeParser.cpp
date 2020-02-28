@@ -301,7 +301,7 @@ bool PeParser::readPeHeaderFromFile(bool readSectionHeaders)
 bool PeParser::readPeSectionsFromProcess()
 {
 	bool retValue = true;
-	DWORD_PTR readOffset = 0;
+	DWORD_PTR ImageBase, readOffset = 0;
  	DWORD fileAlignment = 0, sectionAlignment = 0;
     unsigned int NumberOfSections = getNumberOfSections();
 
@@ -375,6 +375,8 @@ bool PeParser::readPeSectionsFromProcess()
                     DoOutputDebugString("PeParser::readPeSectionsFromProcess: VirtualSize for last section (%d) ok: 0x%x.\n", i+1, listPeSection[i].sectionHeader.Misc.VirtualSize);
 #endif
                 }
+                else
+                    listPeSection[i].normalSize = listPeSection[i].sectionHeader.Misc.VirtualSize;
             }
 
             if (i)
@@ -409,7 +411,25 @@ bool PeParser::readPeSectionsFromProcess()
 	}
 
 #ifdef DEBUG_COMMENTS
-            DoOutputDebugString("PeParser::readPeSectionsFromProcess: readSectionFromProcess success.\n");
+    DoOutputDebugString("PeParser::readPeSectionsFromProcess: readSectionFromProcess success.\n");
+#endif
+
+    ImageBase = getStandardImagebase();
+
+    if (moduleBaseAddress && moduleBaseAddress != ImageBase)
+    {
+        if (reBasePEImage(moduleBaseAddress))
+        {
+#ifdef DEBUG_COMMENTS
+            DoOutputDebugString("readPeSectionsFromProcess: Image relocated back to header image base 0x%p.\n", ImageBase);
+#endif
+        }
+        else
+            DoOutputDebugString("readPeSectionsFromProcess: Failed to relocate image back to header image base 0x%p.\n", ImageBase);
+    }
+#ifdef DEBUG_COMMENTS
+    else
+        DoOutputDebugString("readPeSectionsFromProcess: No relocation needed (image base 0x%p, header 0x%p.\n", ImageBase, moduleBaseAddress);
 #endif
 
 	return retValue;
@@ -516,10 +536,13 @@ void PeParser::getDosAndNtHeader(BYTE * memory, LONG size)
 		pNTHeader32 = (PIMAGE_NT_HEADERS32)((DWORD_PTR)pDosHeader + pDosHeader->e_lfanew);
 		pNTHeader64 = (PIMAGE_NT_HEADERS64)((DWORD_PTR)pDosHeader + pDosHeader->e_lfanew);
 
-		if (pDosHeader->e_lfanew > sizeof(IMAGE_DOS_HEADER))
+		if (pDosHeader->e_lfanew >= sizeof(IMAGE_DOS_HEADER))
 		{
 			dosStubSize = pDosHeader->e_lfanew - sizeof(IMAGE_DOS_HEADER);
 			pDosStub = (BYTE *)((DWORD_PTR)pDosHeader + sizeof(IMAGE_DOS_HEADER));
+#ifdef DEBUG_COMMENTS
+            DoOutputDebugString("PeParser::getDosAndNtHeader: dosStubSize size 0x%x.\n", dosStubSize);
+#endif
 		}
 		else if (pDosHeader->e_lfanew < sizeof(IMAGE_DOS_HEADER))
 		{
@@ -599,7 +622,7 @@ void PeParser::getDosAndNtHeader(BYTE * memory, LONG size)
 
 DWORD PeParser::calcCorrectPeHeaderSize(bool readSectionHeaders)
 {
-	DWORD correctSize = pDosHeader->e_lfanew + 50; //extra buffer
+	DWORD correctSize = pDosHeader->e_lfanew + 0x80; //extra buffer
 
 	if (readSectionHeaders)
 	{
@@ -1231,10 +1254,9 @@ bool PeParser::saveCompletePeToDisk(const CHAR *newFile)
 		return false;
 	}
 
-	if (listPeSection[getNumberOfSections()-1].sectionHeader.PointerToRawData < pNTHeader32->OptionalHeader.FileAlignment
-        || listPeSection[getNumberOfSections()-1].sectionHeader.SizeOfRawData < pNTHeader32->OptionalHeader.FileAlignment)
+	if (listPeSection[getNumberOfSections()-1].sectionHeader.PointerToRawData < pNTHeader32->OptionalHeader.FileAlignment)
 	{
-        DoOutputDebugString("PE Parser: Error - image seems incomplete: (%d sections, PointerToRawData: 0x%x, SizeOfRawData: 0x%x) - dump failed.\n", getNumberOfSections(), listPeSection[getNumberOfSections()-1].sectionHeader.PointerToRawData, listPeSection[getNumberOfSections()-1].sectionHeader.SizeOfRawData);
+        DoOutputDebugString("PE Parser: Error - image seems incomplete: (%d sections, PointerToRawData: 0x%x) - dump failed.\n", getNumberOfSections(), listPeSection[getNumberOfSections()-1].sectionHeader.PointerToRawData);
 		return false;
 	}
 
@@ -1497,6 +1519,81 @@ DWORD_PTR PeParser::convertOffsetToRVAVector(DWORD_PTR dwOffset)
 	return 0;
 }
 
+BOOL PeParser::reBasePEImage(DWORD_PTR NewBase)
+{
+	PIMAGE_BASE_RELOCATION Relocations;
+	PIMAGE_NT_HEADERS NtHeaders;
+	DWORD_PTR Delta;
+    ULONG RelocationSize = 0, Size = 0;
+
+	if (isPE32())
+        NtHeaders = (PIMAGE_NT_HEADERS)pNTHeader32;
+    else
+        NtHeaders = (PIMAGE_NT_HEADERS)pNTHeader64;
+
+	if (NewBase & 0xFFFF)
+	{
+		DoOutputDebugString("reBasePEImage: Error, invalid image base 0x%p.\n", NewBase);
+        return FALSE;
+	}
+
+	if (NtHeaders->OptionalHeader.ImageBase == NewBase)
+	{
+		DoOutputDebugString("reBasePEImage: Error, image base already 0x%p.\n", NewBase);
+        return FALSE;
+	}
+
+	if (!NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress)
+	{
+#ifdef DEBUG_COMMENTS
+		DoOutputDebugString("reBasePEImage: Image has no relocation section.\n");
+#endif
+        return FALSE;
+	}
+
+	Relocations = (PIMAGE_BASE_RELOCATION)((PBYTE)NewBase + NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
+    RelocationSize = NtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
+	Delta = NewBase - NtHeaders->OptionalHeader.ImageBase;
+#ifdef DEBUG_COMMENTS
+    DoOutputDebugString("reBasePEImage: Relocations set to 0x%p, size 0x%x, Delta 0x%p\n", Relocations, RelocationSize, Delta);
+#endif
+
+	__try
+	{
+        while (RelocationSize > Size && Relocations->SizeOfBlock)
+        {
+            ULONG NumOfRelocs = (Relocations->SizeOfBlock - 8) / 2;
+            PUSHORT Reloc = (PUSHORT)((PUCHAR)Relocations + 8);
+
+#ifdef DEBUG_COMMENTS
+            DoOutputDebugString("reBasePEImage: VirtualAddress: 0x%.8x; Number of Relocs: %d; Size: %d\n", Relocations->VirtualAddress, NumOfRelocs, Relocations->SizeOfBlock);
+#endif
+            for (ULONG i = 0; i < NumOfRelocs; i++)
+            {
+                if (Reloc[i] > 0)
+                {
+                    PUCHAR *RVA = (PUCHAR*)((PBYTE)(DWORD_PTR)Relocations->VirtualAddress + (Reloc[i] & 0x0FFF));
+#ifndef _WIN64
+                    *((PULONG)(listPeSection[convertRVAToOffsetVectorIndex((DWORD_PTR)RVA)].data + convertRVAToOffsetRelative((DWORD_PTR)RVA))) -= (ULONG)((ULONGLONG)Delta);
+#else
+                    *((PULONGLONG)(listPeSection[convertRVAToOffsetVectorIndex((DWORD_PTR)RVA)].data + convertRVAToOffsetRelative((DWORD_PTR)RVA))) -= (ULONGLONG)Delta;
+#endif
+                }
+            }
+
+            Relocations = (PIMAGE_BASE_RELOCATION)((PUCHAR)Relocations + Relocations->SizeOfBlock);
+            Size += Relocations->SizeOfBlock;
+        }
+    }
+	__except(EXCEPTION_EXECUTE_HANDLER)
+	{
+		DoOutputDebugString("reBasePEImage: Exception rebasing image from 0x%p to 0x%p.\n", NewBase, NtHeaders->OptionalHeader.ImageBase);
+        return FALSE;
+	}
+
+	return TRUE;
+}
+
 void PeParser::fixPeHeader()
 {
 	DWORD dwSize = pDosHeader->e_lfanew + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER);
@@ -1638,6 +1735,8 @@ void PeParser::alignAllSectionHeaders()
 	std::sort(listPeSection.begin(), listPeSection.end(), PeFileSectionSortByVirtualAddress); //sort by VirtualAddress ascending
 
 	newFileSize = pDosHeader->e_lfanew + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) + pNTHeader32->FileHeader.SizeOfOptionalHeader + (NumberOfSections * sizeof(IMAGE_SECTION_HEADER));
+
+	newFileSize += 0x80; // to more closely resemble typical PE files with dos stub
 
 	for (WORD i = 0; i < NumberOfSections; i++)
 	{

@@ -1101,11 +1101,6 @@ extern HOOKDEF(NTSTATUS, WINAPI, DbgUiWaitStateChange,
 	__in_opt PLARGE_INTEGER Timeout
 );
 
-extern HOOKDEF(void, WINAPI, KiUserExceptionDispatcher,
-	__in PEXCEPTION_RECORD ExceptionRecord,
-	__in PCONTEXT Context
-);
-
 extern HOOKDEF(BOOLEAN, WINAPI, RtlDispatchException,
 	__in PEXCEPTION_RECORD ExceptionRecord,
 	__in PCONTEXT Context
@@ -3119,4 +3114,9 @@ extern HOOKDEF (void, WINAPI, OutputDebugStringA,
 
 extern HOOKDEF (void, WINAPI, OutputDebugStringW,
   LPCWSTR lpOutputString
+);
+
+extern HOOKDEF(NTSTATUS, WINAPI, NtContinue,
+  IN PCONTEXT ThreadContext,
+  IN BOOLEAN  RaiseAlert
 );

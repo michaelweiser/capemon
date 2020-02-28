@@ -29,12 +29,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "CAPE\Debugger.h"
 
 extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
+extern void GetThreadContextHandler(DWORD Pid, LPCONTEXT Context);
+extern void SetThreadContextHandler(DWORD Pid, const CONTEXT *Context);
+extern void ResumeThreadHandler(DWORD Pid);
 #ifdef CAPE_TRACE
-//extern PTHREADBREAKPOINTS GetThreadBreakpoints(DWORD ThreadId);
-//extern BOOL ContextSetThreadBreakpoints(PCONTEXT ThreadContext, PTHREADBREAKPOINTS ThreadBreakpoints);
-//extern BOOL ContextSetDebugRegister(PCONTEXT Context, int Register, int Size, LPVOID Address, DWORD Type);
-//extern BOOL ContextCheckDebugRegisters(PCONTEXT Context);
-//extern PVOID bp0, bp1, bp2, bp3;
 extern void NtContinueHandler(PCONTEXT ThreadContext);
 unsigned int TestFlag = 0;
 #endif
@@ -151,7 +149,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtCreateThread,
 		//if (called_by_hook() && pid == GetCurrentProcessId())
 		//	add_ignored_thread(tid);
 
-        if (DEBUGGER_ENABLED && !called_by_hook()) {
+        if (DebuggerEnabled && !called_by_hook()) {
             DoOutputDebugString("NtCreateThread: Initialising breakpoints for thread %d.\n", tid);
             InitNewThreadBreakpoints(tid);
         }
@@ -205,7 +203,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtCreateThreadEx,
 		//	add_ignored_thread(tid);
 
 		if (pid != GetCurrentProcessId())
-            if (DEBUGGER_ENABLED && !called_by_hook()) {
+            if (DebuggerEnabled && !called_by_hook()) {
                 DoOutputDebugString("NtCreateThreadEx: Initialising breakpoints for thread %d.\n", tid);
                 InitNewThreadBreakpoints(tid);
             }
@@ -280,6 +278,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtGetContextThread,
 #endif
 	else
 		LOQ_ntstatus("threading", "pi", "ThreadHandle", ThreadHandle, "ProcessId", pid);
+    if (g_config.injection)
+        GetThreadContextHandler(pid, Context);
     return ret;
 }
 
@@ -301,6 +301,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtSetContextThread,
 #endif
 	else
 		LOQ_ntstatus("threading", "p", "ThreadHandle", ThreadHandle);
+    if (g_config.injection)
+        SetThreadContextHandler(pid, Context);
     if (!g_config.single_process && pid != GetCurrentProcessId())
         pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
 
@@ -343,6 +345,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtResumeThread,
 	DWORD tid = tid_from_thread_handle(ThreadHandle);
 	NTSTATUS ret;
 	ENSURE_ULONG(SuspendCount);
+    if (g_config.injection)
+        ResumeThreadHandler(pid);
     if (pid != GetCurrentProcessId())
         pipe("RESUME:%d,%d", pid, tid);
 
@@ -401,7 +405,7 @@ HOOKDEF(HANDLE, WINAPI, CreateThread,
         lpStartAddress, lpParameter, dwCreationFlags | CREATE_SUSPENDED, lpThreadId);
 
 	if (ret != NULL) {
-        if (DEBUGGER_ENABLED && !called_by_hook()) {
+        if (DebuggerEnabled && !called_by_hook()) {
             DoOutputDebugString("CreateThread: Initialising breakpoints for thread %d.\n", *lpThreadId);
             InitNewThreadBreakpoints(*lpThreadId);
         }
@@ -447,7 +451,7 @@ HOOKDEF(HANDLE, WINAPI, CreateRemoteThread,
         if (pid != GetCurrentProcessId())
             if (!g_config.single_process)
                 pipe("PROCESS:%d:%d,%d", is_suspended(pid, *lpThreadId), pid, *lpThreadId);
-        else if (DEBUGGER_ENABLED && !called_by_hook()) {
+        else if (DebuggerEnabled && !called_by_hook()) {
             DoOutputDebugString("CreateRemoteThread: Initialising breakpoints for (local) thread %d.\n", *lpThreadId);
             InitNewThreadBreakpoints(*lpThreadId);
         }
@@ -501,7 +505,7 @@ HOOKDEF(NTSTATUS, WINAPI, RtlCreateUserThread,
         if (pid != GetCurrentProcessId())
             if (!g_config.single_process)
                 pipe("PROCESS:%d:%d,%d", is_suspended(pid, tid), pid, tid);
-        else if (DEBUGGER_ENABLED && !called_by_hook()) {
+        else if (DebuggerEnabled && !called_by_hook()) {
             DoOutputDebugString("RtlCreateUserThread: Initialising breakpoints for (local) thread %d.\n", tid);
             InitNewThreadBreakpoints(tid);
         }

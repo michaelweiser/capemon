@@ -23,10 +23,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "log.h"
 #include "hooking.h"
 #include "Shlwapi.h"
+#include "CAPE\CAPE.h"
+
+#define DROPPED_LIMIT 100
 
 extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
 extern char *our_dll_path;
 extern wchar_t *our_process_path_w;
+extern PVOID bp0, bp1, bp2, bp3;
 #ifdef CAPE_TRACE
 #define BP_EXEC        0x00
 #define BP_WRITE       0x01
@@ -80,13 +84,21 @@ int read_config(void)
 #else
 	g_config.hook_type = HOOK_HOTPATCH_JMP_INDIRECT;
 #endif
-    g_config.procdump = 0;
+    g_config.procdump = 1;
     g_config.procmemdump = 0;
+    g_config.dropped_limit = 0;
 
 #ifdef CAPE_TRACE
+    g_config.procdump = 0;
     EntryPointRegister = 0;
     TraceDepthLimit = 0xFFFFFFFF;
 #endif
+    memset(g_config.results, 0, MAX_PATH);
+    memset(g_config.analyzer, 0, MAX_PATH);
+    memset(g_config.pythonpath, 0, MAX_PATH);
+    memset(g_config.w_results, 0, sizeof(WCHAR)*MAX_PATH);
+    memset(g_config.w_analyzer, 0, sizeof(WCHAR)*MAX_PATH);
+    memset(g_config.w_pythonpath, 0, sizeof(WCHAR)*MAX_PATH);
 
 	memset(buf, 0, sizeof(buf));
 	while (fgets(buf, sizeof(buf), fp) != NULL)
@@ -118,6 +130,12 @@ int read_config(void)
                     ARRAYSIZE(g_config.results) - 1);
 				for (i = 0; i < ARRAYSIZE(g_config.results); i++)
 					g_config.w_results[i] = (wchar_t)(unsigned short)g_config.results[i];
+			}
+			else if (!strcmp(key, "pythonpath")) {
+                strncpy(g_config.pythonpath, value,
+                    ARRAYSIZE(g_config.pythonpath) - 1);
+				for (i = 0; i < ARRAYSIZE(g_config.pythonpath); i++)
+					g_config.w_pythonpath[i] = (wchar_t)(unsigned short)g_config.pythonpath[i];
 			}
 			else if (!strcmp(key, "file-of-interest")) {
 				unsigned int len = (unsigned int)strlen(value);
@@ -224,6 +242,10 @@ int read_config(void)
 			else if (!strcmp(key, "large-buffer-max")) {
 				large_buffer_log_max = (unsigned int)strtoul(value, NULL, 10);
 			}
+			else if (!strcmp(key, "dropped-limit")) {
+				g_config.dropped_limit = (unsigned int)strtoul(value, NULL, 10);
+                DoOutputDebugString("Dropped file limit set to %d.\n", g_config.dropped_limit);
+			}
 			else if (!strcmp(key, "exclude-apis")) {
 				unsigned int x = 0;
 				char *p2;
@@ -290,25 +312,6 @@ int read_config(void)
                 g_config.dump_on_api_type = (unsigned int)strtoul(value, NULL, 0);
             }
 #ifdef CAPE_TRACE
-			else if (!strcmp(key, "first-region-api")) {
-				unsigned int x = 0;
-				char *p2;
-				p = value;
-				while (p && x < EXCLUSION_MAX) {
-					p2 = strchr(p, ':');
-					if (p2) {
-						*p2 = '\0';
-					}
-					g_config.first_region_api[x++] = strdup(p);
-                    DoOutputDebugString("Added '%s' to first-region-API list.\n", p);
-					if (p2 == NULL)
-						break;
-					p = p2 + 1;
-				}
-			}
-			else if (!strcmp(key, "region-type")) {
-                g_config.region_type = (unsigned int)strtoul(value, NULL, 0);
-            }
             else if (!strcmp(key, "file-offsets")) {
 				g_config.file_offsets = value[0] == '1';
                 if (g_config.file_offsets)
@@ -534,6 +537,15 @@ int read_config(void)
                 if (g_config.injection)
                     DoOutputDebugString("Capture of injected payloads enabled.\n");
 			}
+            else if (!strcmp(key, "combo")) {
+                if (value[0] == '1') {
+                    DoOutputDebugString("Combined payload extractions enabled.\n");
+                    g_config.compression = 1;
+                    g_config.extraction = 1;
+                    g_config.injection = 1;
+                    //g_config.verbose_dumping = 1;
+                }
+			}
             else if (!strcmp(key, "verbose-dumping")) {
 				g_config.verbose_dumping = value[0] == '1';
                 if (g_config.verbose_dumping)
@@ -549,6 +561,20 @@ int read_config(void)
                 if (g_config.single_process)
                     DoOutputDebugString("Monitoring child processes disabled.\n");
 			}
+            else if (!strcmp(key, "dump-crypto")) {
+				g_config.dump_crypto = value[0] == '1';
+                if (g_config.dump_crypto)
+                    DoOutputDebugString("Dumping of crypto API buffers enabled.\n");
+			}
+            else if (!strcmp(key, "hancitor")) {
+				g_config.hancitor = value[0] == '1';
+                if (g_config.hancitor) {
+                    g_config.dump_on_apinames[0] = "InternetCrackUrlA";
+                    g_config.dump_on_api_type = HANCITOR_PAYLOAD;
+                    g_config.procdump = 0;
+                    DoOutputDebugString("Hancitor config & payload extraction enabled.\n");
+                }
+			}
             else DoOutputDebugString("CAPE debug - unrecognised key %s.\n", key);
 		}
     }
@@ -556,6 +582,12 @@ int read_config(void)
 	/* don't suspend logging if this isn't the first process or if we want all the logs */
 	if (!g_config.first_process || g_config.full_logs)
 		g_config.suspend_logging = FALSE;
+
+	/* if no option supplied for dropped limit set a sensible value */
+	if (!g_config.dropped_limit) {
+		g_config.dropped_limit = DROPPED_LIMIT;
+        DoOutputDebugString("Dropped file limit defaulting to %d.\n", DROPPED_LIMIT);
+    }
 
 	fclose(fp);
     DeleteFileA(config_fname);

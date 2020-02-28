@@ -29,18 +29,23 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "config.h"
 #include "CAPE\CAPE.h"
 #include "CAPE\Debugger.h"
+#include "CAPE\Extraction.h"
 
 extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
 extern void DoOutputErrorString(_In_ LPCTSTR lpOutputString, ...);
 
-#ifdef CAPE_EXTRACTION
+extern void OpenProcessHandler(HANDLE ProcessHandle, DWORD Pid);
+extern void ResumeProcessHandler(HANDLE ProcessHandle, DWORD Pid);
+extern void MapSectionViewHandler(HANDLE ProcessHandle, HANDLE SectionHandle, PVOID BaseAddress, SIZE_T ViewSize);
+extern void UnmapSectionViewHandler(PVOID BaseAddress);
+extern void WriteMemoryHandler(HANDLE ProcessHandle, LPVOID BaseAddress, LPCVOID Buffer, SIZE_T NumberOfBytesWritten);
 extern struct TrackedRegion *TrackedRegionList;
 extern void AllocationHandler(PVOID BaseAddress, SIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
 extern void ProtectionHandler(PVOID BaseAddress, SIZE_T RegionSize, ULONG Protect, ULONG OldProtect);
 extern void FreeHandler(PVOID BaseAddress);
 extern void ProcessTrackedRegion();
-#endif
 
+extern HANDLE g_terminate_event_handle;
 extern BOOL CAPEExceptionDispatcher(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT Context);
 extern void file_handle_terminate();
 extern int DoProcessDump(PVOID CallerBase);
@@ -380,6 +385,9 @@ HOOKDEF(NTSTATUS, WINAPI, NtOpenProcess,
 
     ret = Old_NtOpenProcess(ProcessHandle, DesiredAccess, ObjectAttributes, ClientId);
 
+    if (NT_SUCCESS(ret) && g_config.injection)
+        OpenProcessHandler(*ProcessHandle, pid);
+
     LOQ_ntstatus("process", "Phi", "ProcessHandle", ProcessHandle,
         "DesiredAccess", DesiredAccess,
         "ProcessIdentifier", pid);
@@ -392,6 +400,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtResumeProcess,
 ) {
 	NTSTATUS ret;
 	DWORD pid = pid_from_process_handle(ProcessHandle);
+    if (g_config.injection)
+        ResumeProcessHandler(ProcessHandle, pid);
 	pipe("RESUME:%d", pid);
 	ret = Old_NtResumeProcess(ProcessHandle);
 	LOQ_ntstatus("process", "pl", "ProcessHandle", ProcessHandle, "ProcessId", pid);
@@ -407,35 +417,19 @@ HOOKDEF(NTSTATUS, WINAPI, NtTerminateProcess,
 	// Process will terminate. Default logging will not work. Be aware: return value not valid
     NTSTATUS ret = 0;
 	lasterror_t lasterror;
-
 	get_lasterrors(&lasterror);
-	if (ProcessHandle == NULL) {
+
+    if (ProcessHandle == NULL) {
 		// we mark this here as this termination type will kill all threads but ours, including
 		// the logging thread.  By setting this, we'll switch into a direct logging mode
 		// for the subsequent call to NtTerminateProcess against our own process handle
-#ifdef CAPE_EXTRACTION
-        ProcessTrackedRegion();
-#endif
-        if (g_config.procdump && !ProcessDumped)
-        {
-            DoOutputDebugString("NtTerminateProcess hook: Attempting to dump process %d\n", GetCurrentProcessId());
-            DoProcessDump(GetHookCallerBase());
-        }
 		process_shutting_down = 1;
-		LOQ_ntstatus("process", "phl", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus, "ProcessId", GetCurrentProcessId());
+		LOQ_ntstatus("process", "ph", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus);
         file_handle_terminate();
 	}
 	else if (GetCurrentProcessId() == our_getprocessid(ProcessHandle)) {
-#ifdef CAPE_EXTRACTION
-        ProcessTrackedRegion();
-#endif
-        if (g_config.procdump && !ProcessDumped)
-        {
-            DoOutputDebugString("NtTerminateProcess hook: Attempting to dump process %d\n", GetCurrentProcessId());
-            DoProcessDump(GetHookCallerBase());
-        }
 		process_shutting_down = 1;
-		LOQ_ntstatus("process", "phl", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus, "ProcessId", GetCurrentProcessId());
+		LOQ_ntstatus("process", "ph", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus);
 		pipe("KILL:%d", GetCurrentProcessId());
 		log_free();
         file_handle_terminate();
@@ -444,16 +438,30 @@ HOOKDEF(NTSTATUS, WINAPI, NtTerminateProcess,
 		DWORD PID = pid_from_process_handle(ProcessHandle);
 		if (is_protected_pid(PID)) {
 			ret = STATUS_ACCESS_DENIED;
-			LOQ_ntstatus("process", "phl", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus, "ProcessId", GetCurrentProcessId());
+			LOQ_ntstatus("process", "ph", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus);
 			return ret;
 		}
 		else {
-			LOQ_ntstatus("process", "phl", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus, "ProcessId", GetCurrentProcessId());
+			LOQ_ntstatus("process", "ph", "ProcessHandle", ProcessHandle, "ExitCode", ExitStatus);
 		}
 		pipe("KILL:%d", PID);
 	}
-	set_lasterrors(&lasterror);
 
+    if (process_shutting_down && g_config.extraction)
+    {
+        DoOutputDebugString("NtTerminateProcess hook: Processing tracked regions before shutdown (process %d).\n", GetCurrentProcessId());
+        g_terminate_event_handle = NULL;    // This tells ProcessTrackedRegions it's the final time
+        ProcessTrackedRegions();
+        ClearAllBreakpoints();
+    }
+
+    if (process_shutting_down && g_config.procdump && !ProcessDumped)
+    {
+        DoOutputDebugString("NtTerminateProcess hook: Attempting to dump process %d\n", GetCurrentProcessId());
+        DoProcessDump(GetHookCallerBase());
+    }
+
+	set_lasterrors(&lasterror);
 	ret = Old_NtTerminateProcess(ProcessHandle, ExitStatus);
     return ret;
 }
@@ -523,6 +531,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtUnmapViewOfSection,
             sizeof(mbi)) == sizeof(mbi)) {
         map_size = mbi.RegionSize;
     }
+    if (g_config.injection)
+        UnmapSectionViewHandler(BaseAddress);
 
     ret = Old_NtUnmapViewOfSection(ProcessHandle, BaseAddress);
 
@@ -554,9 +564,10 @@ HOOKDEF(NTSTATUS, WINAPI, NtMapViewOfSection,
     "SectionOffset", SectionOffset, "ViewSize", ViewSize, "Win32Protect", Win32Protect, "StackPivoted", is_stack_pivoted() ? "yes" : "no");
 
 	if (NT_SUCCESS(ret)) {
-#ifdef CAPE_EXTRACTION
-        ProtectionHandler(*BaseAddress, ViewSize, Win32Protect, 0);
-#endif
+        if (g_config.injection)
+            MapSectionViewHandler(ProcessHandle, SectionHandle, *BaseAddress, *ViewSize);
+        //if (g_config.extraction)
+        //    ProtectionHandler(*BaseAddress, *ViewSize, Win32Protect, 0);
         if (!g_config.single_process && pid != GetCurrentProcessId()) {
 			pipe("PROCESS:%d:%d", is_suspended(pid, 0), pid);
 			disable_sleep_skip();
@@ -580,10 +591,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtAllocateVirtualMemory,
     NTSTATUS ret = Old_NtAllocateVirtualMemory(ProcessHandle, BaseAddress,
         ZeroBits, RegionSize, AllocationType, Protect);
 
-#ifdef CAPE_EXTRACTION
-	if (NT_SUCCESS(ret) && !called_by_hook() && GetCurrentProcessId() == our_getprocessid(ProcessHandle))
+	if (NT_SUCCESS(ret) && g_config.extraction && !called_by_hook() && GetCurrentProcessId() == our_getprocessid(ProcessHandle))
         AllocationHandler(*BaseAddress, *RegionSize, AllocationType, Protect);
-#endif
 
     LOQ_ntstatus("process", "pPPhs", "ProcessHandle", ProcessHandle, "BaseAddress", BaseAddress,
         "RegionSize", RegionSize, "Protection", Protect, "StackPivoted", is_stack_pivoted() ? "yes" : "no");
@@ -650,6 +659,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtWriteVirtualMemory,
 
 	if (pid != GetCurrentProcessId()) {
 		if (NT_SUCCESS(ret)) {
+            if (g_config.injection)
+                WriteMemoryHandler(ProcessHandle, BaseAddress, Buffer, *NumberOfBytesWritten);
 			if (!g_config.single_process)
                 pipe("PROCESS:%d:%d", is_suspended(pid, 0), pid);
 			disable_sleep_skip();
@@ -680,6 +691,8 @@ HOOKDEF(BOOL, WINAPI, WriteProcessMemory,
 
 	if (pid != GetCurrentProcessId()) {
 		if (ret) {
+            if (g_config.injection)
+                WriteMemoryHandler(hProcess, lpBaseAddress, lpBuffer, *lpNumberOfBytesWritten);
 			if (!g_config.single_process)
                 pipe("PROCESS:%d:%d", is_suspended(pid, 0), pid);
 			disable_sleep_skip();
@@ -751,9 +764,7 @@ HOOKDEF(NTSTATUS, WINAPI, NtProtectVirtualMemory,
 ) {
 	NTSTATUS ret;
 	MEMORY_BASIC_INFORMATION meminfo;
-#ifdef CAPE_EXTRACTION
     PTRACKEDREGION TrackedRegion;
-#endif
 
 	if (NewAccessProtection == PAGE_EXECUTE_READWRITE && BaseAddress && NumberOfBytesToProtect && *NumberOfBytesToProtect >= 0x2000 &&
 		GetCurrentProcessId() == our_getprocessid(ProcessHandle) && is_in_dll_range((ULONG_PTR)*BaseAddress)) {
@@ -782,15 +793,13 @@ HOOKDEF(NTSTATUS, WINAPI, NtProtectVirtualMemory,
 		set_lasterrors(&lasterrors);
 	}
 
-#ifdef CAPE_EXTRACTION
-	if (NT_SUCCESS(ret) && !called_by_hook() && GetCurrentProcessId() == our_getprocessid(ProcessHandle))
+	if (NT_SUCCESS(ret) && g_config.extraction && !called_by_hook() && GetCurrentProcessId() == our_getprocessid(ProcessHandle))
     {
         ProtectionHandler(*BaseAddress, *NumberOfBytesToProtect, NewAccessProtection, *OldAccessProtection);
 
         if ((TrackedRegion = GetTrackedRegion(*BaseAddress)) && TrackedRegion->Guarded)
             *OldAccessProtection &= (~PAGE_GUARD);
     }
-#endif
 
 	if (NewAccessProtection == PAGE_EXECUTE_READWRITE &&
 		(ULONG_PTR)meminfo.AllocationBase >= get_stack_bottom() && (((ULONG_PTR)meminfo.AllocationBase + meminfo.RegionSize) <= get_stack_top())) {
@@ -819,9 +828,7 @@ HOOKDEF(BOOL, WINAPI, VirtualProtectEx,
 ) {
 	BOOL ret;
 	MEMORY_BASIC_INFORMATION meminfo;
-#ifdef CAPE_EXTRACTION
     PTRACKEDREGION TrackedRegion;
-#endif
 
 	if (flNewProtect == PAGE_EXECUTE_READ && GetCurrentProcessId() == our_getprocessid(hProcess) &&
 		is_in_dll_range((ULONG_PTR)lpAddress))
@@ -838,15 +845,13 @@ HOOKDEF(BOOL, WINAPI, VirtualProtectEx,
 		set_lasterrors(&lasterrors);
 	}
 
-#ifdef CAPE_EXTRACTION
-	if (NT_SUCCESS(ret) && !called_by_hook() && GetCurrentProcessId() == our_getprocessid(hProcess))
+	if (NT_SUCCESS(ret) && g_config.extraction && !called_by_hook() && GetCurrentProcessId() == our_getprocessid(hProcess))
     {
         ProtectionHandler(lpAddress, dwSize, flNewProtect, *lpflOldProtect);
 
         if ((TrackedRegion = GetTrackedRegion(lpAddress)) && TrackedRegion->Guarded)
             *lpflOldProtect &= (~PAGE_GUARD);
     }
-#endif
 
 	if (flNewProtect == PAGE_EXECUTE_READWRITE && GetCurrentProcessId() == our_getprocessid(hProcess) &&
 		(ULONG_PTR)meminfo.AllocationBase >= get_stack_bottom() && (((ULONG_PTR)meminfo.AllocationBase + meminfo.RegionSize) <= get_stack_top())) {
@@ -867,10 +872,8 @@ HOOKDEF(NTSTATUS, WINAPI, NtFreeVirtualMemory,
     IN OUT  PSIZE_T RegionSize,
     IN      ULONG FreeType
 ) {
-#ifdef CAPE_EXTRACTION
-    if (!called_by_hook() && GetCurrentProcessId() == our_getprocessid(ProcessHandle) && *RegionSize == 0 && (FreeType & MEM_RELEASE))
+    if (g_config.extraction && !called_by_hook() && GetCurrentProcessId() == our_getprocessid(ProcessHandle) && *RegionSize == 0 && (FreeType & MEM_RELEASE))
         FreeHandler(*BaseAddress);
-#endif
 
     NTSTATUS ret = Old_NtFreeVirtualMemory(ProcessHandle, BaseAddress,
         RegionSize, FreeType);
@@ -957,42 +960,37 @@ HOOKDEF(BOOLEAN, WINAPI, RtlDispatchException,
 	__in PCONTEXT Context)
 {
     BOOL RetVal;
-
-    // if trying to write to ntdll.dll, then just skip the instruction
+#ifndef _WIN64
 	if (ExceptionRecord && ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && ExceptionRecord->ExceptionFlags == 0 &&
 		ExceptionRecord->NumberParameters == 2 && ExceptionRecord->ExceptionInformation[0] == 1) {
 		unsigned int offset;
 		char *dllname = convert_address_to_dll_name_and_offset(ExceptionRecord->ExceptionInformation[1], &offset);
 		if (dllname && !strcmp(dllname, "ntdll.dll")) {
 			free(dllname);
-#ifdef _WIN64
-			Context->Rip += lde((void *)Context->Rip);
-#else
+			// if trying to write to ntdll.dll, then just skip the instruction
 			Context->Eip += lde((void *)Context->Eip);
-#endif
 			return TRUE;
 		}
 		if (dllname) free(dllname);
 	}
 
 	if (ExceptionRecord && (ULONG_PTR)ExceptionRecord->ExceptionAddress >= g_our_dll_base && (ULONG_PTR)ExceptionRecord->ExceptionAddress < (g_our_dll_base + g_our_dll_size)) {
-        if (!(DEBUGGER_ENABLED && ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP)) {
-            char buf[160];
-            ULONG_PTR seh = 0;
-            DWORD_PTR *tebtmp = (DWORD_PTR *)NtCurrentTeb();
-            if (tebtmp[0] != 0xffffffff)
-                seh = ((DWORD_PTR *)tebtmp[0])[1];
-            if (seh < g_our_dll_base || seh >= (g_our_dll_base + g_our_dll_size)) {
-                _snprintf(buf, sizeof(buf), "Single-step exception (0x%x) reported at offset 0x%x in capemon itself while accessing 0x%x from hook %s", ExceptionRecord->ExceptionCode, (DWORD)((ULONG_PTR)ExceptionRecord->ExceptionAddress - g_our_dll_base), (unsigned int)ExceptionRecord->ExceptionInformation[1], hook_info()->current_hook ? hook_info()->current_hook->funcname : "unknown");
-                log_anomaly("capemon crash", buf);
-            }
+		char buf[160];
+		ULONG_PTR seh = 0;
+		DWORD *tebtmp = (DWORD *)NtCurrentTeb();
+		if (tebtmp[0] != 0xffffffff)
+			seh = ((DWORD *)tebtmp[0])[1];
+		if (seh < g_our_dll_base || seh >= (g_our_dll_base + g_our_dll_size)) {
+			_snprintf(buf, sizeof(buf), "Exception 0x%x reported at offset 0x%x in capemon itself while accessing 0x%x from hook %s", ExceptionRecord->ExceptionCode, (DWORD)((ULONG_PTR)ExceptionRecord->ExceptionAddress - g_our_dll_base), ExceptionRecord->ExceptionInformation[1], hook_info()->current_hook ? hook_info()->current_hook->funcname : "unknown");
+			log_anomaly("capemon crash", buf);
 		}
 	}
+#endif
 
 	// flush logs prior to handling of an exception without having to register a vectored exception handler
 	log_flush();
 
-    if (DEBUGGER_ENABLED)
+    if (DebuggerEnabled)
     {
         if (CAPEExceptionDispatcher(ExceptionRecord, Context))
             return 1;
@@ -1013,41 +1011,8 @@ HOOKDEF(BOOLEAN, WINAPI, RtlDispatchException,
             DoOutputDebugString("RtlDispatchException: Unhandled exception! Address 0x%p, code 0x%x, flags 0x%x, %d parameters: 0x%x, 0x%x & ...\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags, ExceptionRecord->NumberParameters, ExceptionRecord->ExceptionInformation[0], ExceptionRecord->ExceptionInformation[1]);
         }
     }
-    //else if (ExceptionRecord) {
-    //    if (ExceptionRecord->NumberParameters == 1) {
-    //        DoOutputDebugString("RtlDispatchException: Handled exception: Address 0x%p, code 0x%x, flags 0x%x, parameter 0x%x.\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags, ExceptionRecord->ExceptionInformation[0]);
-    //    }
-    //    else if (ExceptionRecord->NumberParameters == 2) {
-    //        DoOutputDebugString("RtlDispatchException: Handled exception: Address 0x%p, code 0x%x, flags 0x%x, parameters 0x%x and 0x%x.\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags, ExceptionRecord->ExceptionInformation[0], ExceptionRecord->ExceptionInformation[1]);
-    //    }
-    //    else {
-    //        DoOutputDebugString("RtlDispatchException: Handled exception: Address 0x%p, code 0x%x, flags 0x%x, %d parameters: 0x%x, 0x%x & ...\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags, ExceptionRecord->NumberParameters, ExceptionRecord->ExceptionInformation[0], ExceptionRecord->ExceptionInformation[1]);
-    //    }
-    //}
 
     return RetVal;
-}
-
-HOOKDEF(void, WINAPI, KiUserExceptionDispatcher,
-	__in PEXCEPTION_RECORD ExceptionRecord,
-	__in PCONTEXT Context)
-{
-	int ret = 0;
-    if (ExceptionRecord) {
-        if (ExceptionRecord->NumberParameters == 0) {
-            DoOutputDebugString("KiUserExceptionDispatcher: Exception: Address 0x%p, code 0x%x, flags 0x%x, no parameters.\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags);
-        }
-        else if (ExceptionRecord->NumberParameters == 1) {
-            DoOutputDebugString("KiUserExceptionDispatcher: Exception: Address 0x%p, code 0x%x, flags 0x%x, parameter 0x%x.\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags, ExceptionRecord->ExceptionInformation[0]);
-        }
-        else if (ExceptionRecord->NumberParameters == 2) {
-            DoOutputDebugString("KiUserExceptionDispatcher: Exception: Address 0x%p, code 0x%x, flags 0x%x, parameters 0x%x and 0x%x.\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags, ExceptionRecord->ExceptionInformation[0], ExceptionRecord->ExceptionInformation[1]);
-        }
-        else {
-            DoOutputDebugString("KiUserExceptionDispatcher: Exception: Address 0x%p, code 0x%x, flags 0x%x, %d parameters: 0x%x, 0x%x & ...\n", ExceptionRecord->ExceptionAddress, ExceptionRecord->ExceptionCode, ExceptionRecord->ExceptionFlags, ExceptionRecord->NumberParameters, ExceptionRecord->ExceptionInformation[0], ExceptionRecord->ExceptionInformation[1]);
-        }
-    }
-    Old_KiUserExceptionDispatcher(ExceptionRecord, Context);
 }
 
 HOOKDEF_NOTAIL(WINAPI, NtRaiseException,

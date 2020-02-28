@@ -27,6 +27,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "pipe.h"
 #include "CAPE\CAPE.h"
 #include "CAPE\Debugger.h"
+#include "CAPE\Extraction.h"
 
 #ifdef _WIN64
 #define TLS_LAST_WIN32_ERROR 0x68
@@ -38,19 +39,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 static lookup_t g_hook_info;
 lookup_t g_caller_regions;
-
-#ifdef CAPE_EXTRACTION
-#include "CAPE\Extraction.h"
-#endif
-
-
-extern void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
-extern BOOL DumpRegion(PVOID Address);
-extern int DumpImageInCurrentProcess(LPVOID ImageBase);
-extern PVOID GetAllocationBase(PVOID Address);
-extern PVOID GetHookCallerBase(hook_info_t *hookinfo);
-extern BOOL ModuleDumped;
-
 
 #ifdef CAPE_TRACE
 extern BOOL SetInitialBreakpoints(PVOID ImageBase);
@@ -80,39 +68,21 @@ static int set_caller_info(void *unused, ULONG_PTR addr)
 	if (!is_in_dll_range(addr)) {
         PVOID AllocationBase = GetAllocationBase((PVOID)addr);
         if (AllocationBase && !lookup_get(&g_caller_regions, (ULONG_PTR)AllocationBase, 0)) {
-            DoOutputDebugString("set_caller_info: Adding region at 0x%p to caller regions list (%ws::%s).\n", AllocationBase, hookinfo->current_hook->library, hookinfo->current_hook->funcname);
             lookup_add(&g_caller_regions, (ULONG_PTR)AllocationBase, 0);
-#ifdef CAPE_TRACE
-            for (unsigned int i = 0; i < ARRAYSIZE(g_config.first_region_api); i++) {
-                if (!g_config.first_region_api[i])
-                    break;
-                if (!stricmp(hookinfo->current_hook->funcname, g_config.first_region_api[i])) {
-                    DoOutputDebugString("First-region-API: %s call detected in thread %d, addr 0x%p.\n", g_config.first_region_api[i], GetCurrentThreadId(), addr);
-                    if (g_config.region_type) {
-                        CapeMetaData->DumpType = g_config.region_type;
-                        if (DumpImageInCurrentProcess(AllocationBase)) {
-                            ModuleDumped = TRUE;
-                            DoOutputDebugString("First-region-API: Dumped module at 0x%p due to %s call.\n", AllocationBase, hookinfo->current_hook->funcname);
-                        }
-                        else if (DumpRegion(AllocationBase)) {
-                            ModuleDumped = TRUE;
-                            DoOutputDebugString("First-region-API: Dumped memory region at 0x%p due to %s call.\n", AllocationBase, hookinfo->current_hook->funcname);
-                        }
-                        else {
-                            DoOutputDebugString("First-region-API: Failed to dump memory region at 0x%p due to %s call.\n", AllocationBase, hookinfo->current_hook->funcname);
-                        }
-                    }
-                    BreakpointsSet = SetInitialBreakpoints((PVOID)AllocationBase);
-                    if (BreakpointsSet)
-                        DoOutputDebugString("First-region-API: Breakpoints set on region at 0x%p.\n", AllocationBase);
-                    else
-                        DoOutputDebugString("First-region-API: Failed to set breakpoints on 0x%p.\n", AllocationBase);
-                    break;
+            DoOutputDebugString("set_caller_info: Adding region at 0x%p to caller regions list (%ws::%s).\n", AllocationBase, hookinfo->current_hook->library, hookinfo->current_hook->funcname);
+            if (g_config.extraction) {
+                PTRACKEDREGION TrackedRegion = GetTrackedRegion((PVOID)addr);
+                if (TrackedRegion) {
+                    TrackedRegion->CanDump = 1;
+                    ProcessTrackedRegion(TrackedRegion);
+                }
+                else if (g_config.verbose_dumping) {
+                    TrackedRegion = AddTrackedRegion((PVOID)addr, 0,0);
+                    TrackedRegion->CanDump = 1;
+                    ProcessTrackedRegion(TrackedRegion);
                 }
             }
-#endif
-            if (g_config.verbose_dumping)
-            {
+            else if (g_config.verbose_dumping) {
                 DoOutputDebugString("VerboseDump: Dumping calling region at 0x%p.\n", AllocationBase);
 
                 CapeMetaData->ModulePath = NULL;
@@ -124,13 +94,6 @@ static int set_caller_info(void *unused, ULONG_PTR addr)
                 else
                     DumpRegion(AllocationBase);
             }
-#ifdef CAPE_EXTRACTION
-            PTRACKEDREGION TrackedRegion = GetTrackedRegion(addr);
-            if (TrackedRegion) {
-                TrackedRegion->CanDump = 1;
-                ProcessTrackedRegion(TrackedRegion);
-            }
-#endif
         }
 		if (hookinfo->main_caller_retaddr == 0)
 			hookinfo->main_caller_retaddr = addr;
@@ -347,7 +310,8 @@ void set_lasterrors(lasterror_t *errors)
 	*(DWORD *)(teb + TLS_LAST_WIN32_ERROR) = errors->Win32Error;
 	*(DWORD *)(teb + TLS_LAST_NTSTATUS_ERROR) = errors->NtstatusError;
 
-    __writeeflags(errors->Eflags);
+    if ((errors->Eflags))
+        __writeeflags(errors->Eflags);
 }
 
 void hook_enable()

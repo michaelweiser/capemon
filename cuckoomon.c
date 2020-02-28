@@ -48,6 +48,7 @@ extern ULONG_PTR base_of_dll_of_interest;
 extern BOOL SetInitialBreakpoints(PVOID ImageBase);
 #endif
 extern PCHAR ScyllaGetExportDirectory(PVOID Address);
+extern void ExtractionDllInit(PVOID DllBase);
 
 void disable_tail_call_optimization(void)
 {
@@ -111,7 +112,6 @@ static hook_t g_hooks[] = {
 	HOOK_SPECIAL(ole32, CoCreateInstanceEx),
 	HOOK_SPECIAL(ole32, CoGetClassObject),
 
-	//HOOK(ntdll, KiUserExceptionDispatcher),
 	HOOK_SPECIAL(ntdll, RtlDispatchException),
 	HOOK_NOTAIL(ntdll, NtRaiseException, 3),
 
@@ -357,6 +357,7 @@ static hook_t g_hooks[] = {
     HOOK(ntdll, NtSetInformationThread),
     HOOK(ntdll, NtQueryInformationThread),
     HOOK(ntdll, NtYieldExecution),
+    HOOK(ntdll, NtContinue),
 
     // Memory copy hooks
     //HOOK(ntdll, RtlMoveMemory),
@@ -705,6 +706,8 @@ VOID CALLBACK New_DllLoadNotification(
             if (!base_of_dll_of_interest)
                 set_dll_of_interest((ULONG_PTR)NotificationData->Loaded.DllBase);
             DoOutputDebugString("Target DLL loaded at 0x%p: %ws (0x%x bytes).\n", NotificationData->Loaded.DllBase, library.Buffer, NotificationData->Loaded.SizeOfImage);
+            if (g_config.extraction)
+                ExtractionDllInit((PVOID)base_of_dll_of_interest);
 #ifdef CAPE_TRACE
             SetInitialBreakpoints((PVOID)base_of_dll_of_interest);
 #endif

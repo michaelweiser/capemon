@@ -19,21 +19,31 @@ extern HMODULE s_hInst;
 extern WCHAR s_wzDllPath[MAX_PATH];
 extern CHAR s_szDllPath[MAX_PATH];
 
-//Global debugger switch
-#define DEBUGGER_ENABLED 1
+#define PE_MAX_SIZE     ((ULONG)0x77000000)
+#define PE_MIN_SIZE     ((ULONG)0x1000)
+#define PE_MAX_SECTIONS 0xFFFF
+
+void DoOutputDebugString(_In_ LPCTSTR lpOutputString, ...);
+void DoOutputErrorString(_In_ LPCTSTR lpOutputString, ...);
 
 PVOID GetHookCallerBase();
+BOOL InsideHook(LPVOID* ReturnAddress, LPVOID Address);
 PVOID GetPageAddress(PVOID Address);
 PVOID GetAllocationBase(PVOID Address);
-BOOL InsideMonitor(LPVOID* ReturnAddress, LPVOID Address);
+SIZE_T GetAllocationSize(PVOID Address);
+BOOL TestPERequirements(PIMAGE_NT_HEADERS pNtHeader);
+SIZE_T GetMinPESize(PIMAGE_NT_HEADERS pNtHeader);
+double GetEntropy(PUCHAR Buffer);
 BOOL TranslatePathFromDeviceToLetter(__in TCHAR *DeviceFilePath, __out TCHAR* DriveLetterFilePath, __inout LPDWORD lpdwBufferSize);
-void PrintHexBytes(__in char* TextBuffer, __in BYTE* HexBuffer, __in unsigned int Count);
+DWORD GetEntryPoint(LPVOID Address);
 BOOL DumpPEsInRange(LPVOID Buffer, SIZE_T Size);
 BOOL DumpRegion(PVOID Address);
 int DumpMemory(LPVOID Buffer, SIZE_T Size);
 int DumpCurrentProcessNewEP(LPVOID NewEP);
+int DumpImageInCurrentProcessFixImports(LPVOID BaseAddress, LPVOID NewEP);
+int DumpCurrentProcessFixImports(LPVOID NewEP);
 int DumpCurrentProcess();
-int DumpProcess(HANDLE hProcess, LPVOID ImageBase);
+int DumpProcess(HANDLE hProcess, LPVOID ImageBase, LPVOID NewEP);
 int DumpPE(LPVOID Buffer);
 int ScanForNonZero(LPVOID Buffer, SIZE_T Size);
 int ScanPageForNonZero(LPVOID Address);
@@ -42,47 +52,12 @@ int ScanForDisguisedPE(LPVOID Buffer, SIZE_T Size, LPVOID* Offset);
 int IsDisguisedPEHeader(LPVOID Buffer);
 int DumpImageInCurrentProcess(LPVOID ImageBase);
 void DumpSectionViewsForPid(DWORD Pid);
+BOOL DumpStackRegion(void);
+
+BOOL ProcessDumped, FilesDumped, ModuleDumped;
 
 SYSTEM_INFO SystemInfo;
 PVOID CallingModule;
-
-typedef struct InjectionSectionView
-{
-    HANDLE                          SectionHandle;
-    PVOID                           LocalView;
-    SIZE_T                          ViewSize;
-	int                             TargetProcessId;
-    struct InjectionSectionView     *NextSectionView;
-} INJECTIONSECTIONVIEW, *PINJECTIONSECTIONVIEW;
-
-PINJECTIONSECTIONVIEW AddSectionView(HANDLE SectionHandle, PVOID LocalView, SIZE_T ViewSize);
-PINJECTIONSECTIONVIEW GetSectionView(HANDLE SectionHandle);
-BOOL DropSectionView(PINJECTIONSECTIONVIEW SectionView);
-void DumpSectionViewsForPid(DWORD Pid);
-void DumpSectionView(PINJECTIONSECTIONVIEW SectionView);
-
-typedef struct InjectionInfo
-{
-    int                         ProcessId;
-	HANDLE	                    ProcessHandle;
-    DWORD_PTR                   ImageBase;
-    DWORD_PTR                   EntryPoint;
-    BOOL                        WriteDetected;
-    BOOL                        ImageDumped;
-    LPVOID                      BufferBase;
-    LPVOID                      StackPointer;
-    unsigned int                BufferSizeOfImage;
-    HANDLE                      SectionHandle;
-//    struct InjectionSectionView *SectionViewList;
-    struct InjectionInfo        *NextInjectionInfo;
-} INJECTIONINFO, *PINJECTIONINFO;
-
-struct InjectionInfo *InjectionInfoList;
-
-PINJECTIONINFO GetInjectionInfo(DWORD ProcessId);
-PINJECTIONINFO CreateInjectionInfo(DWORD ProcessId);
-
-struct InjectionSectionView *SectionViewList;
 
 //
 // MessageId: STATUS_SUCCESS
@@ -156,7 +131,15 @@ enum {
     CERBER_CONFIG           = 0x30,
     CERBER_PAYLOAD          = 0x31,
 
-    DATADUMP                = 0x66
+    HANCITOR_CONFIG         = 0x34,
+    HANCITOR_PAYLOAD        = 0x35,
+
+    QAKBOT_CONFIG           = 0x38,
+    QAKBOT_PAYLOAD          = 0x39,
+
+    DATADUMP                = 0x66,
+
+    STACK_REGION            = 0x6c
 };
 
 HANDLE EvilGrabRegHandle;

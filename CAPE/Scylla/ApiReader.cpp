@@ -395,11 +395,12 @@ void ApiReader::parseExportTable(ModuleInfo *module, PIMAGE_NT_HEADERS pNtHeader
 	WORD i = 0, j = 0;
 	bool withoutName;
 
+
     if (pExportDir && pExportDir->Name) {
-        directoryName = (char*)((PBYTE)pExportDir->Name + deltaAddress);
+        directoryName = (char*)((PBYTE)(DWORD_PTR)pExportDir->Name + deltaAddress);
         strncpy_s(module->DirectoryName, directoryName, strlen(directoryName)+1);
 #ifdef DEBUG_COMMENTS
-        DoOutputDebugString("parseExportTable :: pExportDir->Name %s", module->DirectoryName);
+        DoOutputDebugString("parseExportTable:: pExportDir->Name %s", module->DirectoryName);
 #endif
     }
 	addressOfFunctionsArray = (DWORD *)((DWORD_PTR)pExportDir->AddressOfFunctions + deltaAddress);

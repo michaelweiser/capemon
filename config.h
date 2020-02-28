@@ -39,6 +39,12 @@ struct _g_config {
 	// analyzer directory, has to be hidden
 	wchar_t w_analyzer[MAX_PATH];
 
+	// python directory, has to be hidden
+    char pythonpath[MAX_PATH];
+
+	// python directory, has to be hidden
+	wchar_t w_pythonpath[MAX_PATH];
+
 	// cuckoomon DLL directory
 	wchar_t dllpath[MAX_PATH];
 
@@ -100,15 +106,16 @@ struct _g_config {
     //unsigned int host_ip;
     //unsigned short host_port;
 
+	// Dropped files limit
+	unsigned int dropped_limit;
+
 	BOOLEAN suspend_logging;
 
 	char *excluded_apinames[EXCLUSION_MAX];
 	wchar_t *excluded_dllnames[EXCLUSION_MAX];
 	char *base_on_apiname[EXCLUSION_MAX];
-	char *first_region_api[EXCLUSION_MAX];
  	char *dump_on_apinames[EXCLUSION_MAX];
     int dump_on_api_type;
-    int region_type;
 
     // behavioural payload extraction options
     int compression;
@@ -134,6 +141,15 @@ struct _g_config {
     // prevent monitoring child processes
     int single_process;
 
+    // for monitor testing
+    int stand_alone;
+
+    // for dumping of crypto API buffers
+    int dump_crypto;
+
+    // for Hancitor config & payload extraction
+    int hancitor;
+
 #ifdef CAPE_TRACE
 	char *break_on_apiname;
 	char *break_on_modname;
@@ -146,9 +162,8 @@ struct _g_config {
     int step_out;
     int file_offsets;
     int divert_debugger_log;
-#endif
-
     char *trace_into_api[EXCLUSION_MAX];
+#endif
 };
 
 extern struct _g_config g_config;
