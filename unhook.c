@@ -36,6 +36,7 @@ extern void ClearAllBreakpoints();
 extern void ProcessTrackedRegions();
 #ifdef CAPE_TRACE
 extern BOOL StopTrace;
+extern HANDLE DebuggerLog;
 #endif
 
 static HANDLE g_unhook_thread_handle, g_watcher_thread_handle;
@@ -267,6 +268,11 @@ static DWORD WINAPI _terminate_event_thread(LPVOID param)
 
 #ifdef CAPE_TRACE
     StopTrace = TRUE;
+    if (DebuggerLog)
+    {
+        CloseHandle(DebuggerLog);
+        DebuggerLog = NULL;
+    }
 #endif
 
     if (g_config.procdump) {

@@ -130,7 +130,8 @@ unsigned int TrapIndex;
 unsigned int DepthCount;
 extern int operate_on_backtrace(ULONG_PTR _esp, ULONG_PTR _ebp, void *extra, int(*func)(void *, ULONG_PTR));
 #ifdef CAPE_TRACE
-extern BOOL TraceRunning;
+extern void DebuggerOutput(_In_ LPCTSTR lpOutputString, ...);
+extern BOOL TraceRunning, BreakpointsSet;
 #endif
 
 //**************************************************************************************
@@ -546,6 +547,9 @@ LONG WINAPI CAPEExceptionFilter(struct _EXCEPTION_POINTERS* ExceptionInfo)
         if (!TraceRunning)
 #endif
         DoOutputDebugString("CAPEExceptionFilter: breakpoint hit by instruction at 0x%p (thread %d)\n", ExceptionInfo->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+#ifdef CAPE_TRACE
+        DebuggerOutput("Breakpoint hit by instruction at 0x%p (thread %d)\n", ExceptionInfo->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+#endif
 
         for (bp = 0; bp < NUMBER_OF_DEBUG_REGISTERS; bp++)
 		{
@@ -2368,14 +2372,6 @@ BOOL SetBreakpoint
 
 	while (ThreadBreakpoints)
 	{
-        //if (ThreadBreakpoints->ThreadHandle)
-        //    ThreadBreakpoints->BreakpointInfo[Register].ThreadHandle  = ThreadBreakpoints->ThreadHandle;
-        //ThreadBreakpoints->BreakpointInfo[Register].Register      = Register;
-        //ThreadBreakpoints->BreakpointInfo[Register].Size          = Size;
-        //ThreadBreakpoints->BreakpointInfo[Register].Address       = Address;
-        //ThreadBreakpoints->BreakpointInfo[Register].Type          = Type;
-        //ThreadBreakpoints->BreakpointInfo[Register].Callback      = Callback;
-
 		DoOutputDebugString("SetBreakpoint: About to call SetThreadBreakpoint for thread %d.\n", ThreadBreakpoints->ThreadId);
 
         SetThreadBreakpoint(ThreadBreakpoints->ThreadId, Register, Size, Address, Type, Callback);
@@ -3025,7 +3021,7 @@ int launch_debugger()
 
 void NtContinueHandler(PCONTEXT ThreadContext)
 {
-    if (!ThreadContext->Dr0 && !ThreadContext->Dr1 && !ThreadContext->Dr2 && !ThreadContext->Dr3)
+    if (BreakpointsSet && !ThreadContext->Dr0 && !ThreadContext->Dr1 && !ThreadContext->Dr2 && !ThreadContext->Dr3)
     {
         DWORD ThreadId = GetCurrentThreadId();
         if (ThreadId == MainThreadId)

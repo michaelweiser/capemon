@@ -405,9 +405,10 @@ void DebuggerOutput(_In_ LPCTSTR lpOutputString, ...)
         while (*lpOutputString == 0x0a)
             lpOutputString++;
     }
-    else if (StopTrace)
+    else if (DebuggerLog && StopTrace)
     {
         CloseHandle(DebuggerLog);
+        DebuggerLog = NULL;
         va_end(args);
         return;
     }

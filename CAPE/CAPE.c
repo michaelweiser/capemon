@@ -2027,6 +2027,7 @@ void init_CAPE()
     ProcessDumped = FALSE;
 
     DumpCount = 0;
+    g_config.procdump = 0;
 
     InitializeCriticalSection(&ProcessDumpCriticalSection);
 

@@ -57,7 +57,6 @@ int read_config(void)
     // look for the config in analyzer directory
     strncpy(analyzer_path, our_dll_path, strlen(our_dll_path));
     PathRemoveFileSpec(analyzer_path); // remove filename
-    PathRemoveFileSpec(analyzer_path); // remove dll folder
     sprintf(config_fname, "%s\\%u.ini", analyzer_path, GetCurrentProcessId());
 
     fp = fopen(config_fname, "r");
