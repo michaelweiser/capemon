@@ -779,6 +779,14 @@ char *convert_address_to_dll_name_and_offset(ULONG_PTR addr, unsigned int *offse
 	item.Blink->Flink = item.Flink; \
 	item.Flink->Blink = item.Blink
 
+#define LDR_MODULE_DEBUG(z, x, y) \
+	wcstombs(buf, ((LDR_MODULE*)CONTAINING_RECORD(x->y.Blink, LDR_MODULE, y))->FullDllName.Buffer, sizeof(buf)); \
+	wcstombs(buf2, ((LDR_MODULE*)CONTAINING_RECORD(x->y.Flink, LDR_MODULE, y))->FullDllName.Buffer, sizeof(buf2)); \
+	wcstombs(buf3, ((LDR_MODULE*)CONTAINING_RECORD(x->y.Blink->Flink, LDR_MODULE, y))->FullDllName.Buffer, sizeof(buf3)); \
+	DebugOutput(#y " " z " 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, %s, %s, %s", \
+	x, x->y.Blink, x->y.Flink, x->y.Blink->Flink, x->y.Flink->Blink, \
+	buf, buf2, buf3)
+
 void hide_module_from_peb(HMODULE module_handle)
 {
 	LDR_MODULE *mod; PEB *peb = (PEB *)get_peb();
@@ -788,13 +796,22 @@ void hide_module_from_peb(HMODULE module_handle)
 		 mod = (LDR_MODULE *) mod->InLoadOrderModuleList.Flink) {
 
 		if (mod->BaseAddress == module_handle) {
+			char buf[256], buf2[256], buf3[256];
+			LDR_MODULE_DEBUG("before", mod, InLoadOrderModuleList);
 			CUT_LIST(mod->InLoadOrderModuleList);
+			LDR_MODULE_DEBUG("after", mod, InLoadOrderModuleList);
+			LDR_MODULE_DEBUG("before", mod, InInitializationOrderModuleList);
 			CUT_LIST(mod->InInitializationOrderModuleList);
+			LDR_MODULE_DEBUG("after", mod, InInitializationOrderModuleList);
+			LDR_MODULE_DEBUG("before", mod, InMemoryOrderModuleList);
 			CUT_LIST(mod->InMemoryOrderModuleList);
+			LDR_MODULE_DEBUG("after", mod, InMemoryOrderModuleList);
 
 			// TODO test whether this list is really used as a linked list
 			// like InLoadOrderModuleList etc
+			LDR_MODULE_DEBUG("before", mod, HashTableEntry);
 			CUT_LIST(mod->HashTableEntry);
+			LDR_MODULE_DEBUG("after", mod, HashTableEntry);
 
 			memset(mod, 0, sizeof(LDR_MODULE));
 			break;
