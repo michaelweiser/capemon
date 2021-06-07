@@ -184,6 +184,9 @@ hook_t full_hooks[] = {
 	HOOK_NOTAIL_ALT(kernelbase, MoveFileWithProgressTransactedW, 6),
 	HOOK_NOTAIL_ALT(kernel32, MoveFileWithProgressTransactedW, 6),
 
+	HOOK(kernel32, AcquireSRWLockExclusive),
+	HOOK(kernel32, AcquireSRWLockShared),
+
 	// File Hooks
 	HOOK(ntdll, NtQueryAttributesFile),
 	HOOK(ntdll, NtQueryFullAttributesFile),

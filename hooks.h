@@ -22,6 +22,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "ntapi.h"
 #include <tlhelp32.h>
 
+HOOKDEF(void, WINAPI, AcquireSRWLockExclusive,
+	__in PSRWLOCK SRWLock
+);
+
+HOOKDEF(void, WINAPI, AcquireSRWLockShared,
+	__in PSRWLOCK SRWLock
+);
+
 //
 // File Hooks
 //

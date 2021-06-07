@@ -39,6 +39,38 @@ static int bits_sent = 0;
 static int tasksched_sent = 0;
 static int interop_sent = 0;
 
+extern int g_discover_LdrpInvertedFunctionTableSRWLock;
+extern PSRWLOCK g_LdrpInvertedFunctionTableSRWLock;
+extern CRITICAL_SECTION g_discover_LdrpInvertedFunctionTableSRWLock_critsec;
+
+HOOKDEF(void, WINAPI, AcquireSRWLockExclusive,
+	__in PSRWLOCK SRWLock
+)
+{
+	EnterCriticalSection(&g_discover_LdrpInvertedFunctionTableSRWLock_critsec);
+	if (g_discover_LdrpInvertedFunctionTableSRWLock == 1) {
+		g_LdrpInvertedFunctionTableSRWLock = SRWLock;
+		g_discover_LdrpInvertedFunctionTableSRWLock = 0;
+	}
+	LeaveCriticalSection(&g_discover_LdrpInvertedFunctionTableSRWLock_critsec);
+
+	Old_AcquireSRWLockExclusive(SRWLock);
+}
+
+HOOKDEF(void, WINAPI, AcquireSRWLockShared,
+	__in PSRWLOCK SRWLock
+)
+{
+	EnterCriticalSection(&g_discover_LdrpInvertedFunctionTableSRWLock_critsec);
+	if (g_discover_LdrpInvertedFunctionTableSRWLock == 1) {
+		g_LdrpInvertedFunctionTableSRWLock = SRWLock;
+		g_discover_LdrpInvertedFunctionTableSRWLock = 0;
+	}
+	LeaveCriticalSection(&g_discover_LdrpInvertedFunctionTableSRWLock_critsec);
+
+	Old_AcquireSRWLockShared(SRWLock);
+}
+
 HOOKDEF_NOTAIL(WINAPI, LdrLoadDll,
 	__in_opt	PWCHAR PathToFile,
 	__in_opt	PULONG Flags,

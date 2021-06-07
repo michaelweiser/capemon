@@ -506,6 +506,9 @@ extern void ignored_threads_init(void);
 extern CRITICAL_SECTION readfile_critsec, g_mutex, g_writing_log_buffer_mutex;
 BOOLEAN g_dll_main_complete;
 OSVERSIONINFOA g_osverinfo;
+int g_discover_LdrpInvertedFunctionTableSRWLock = 0;
+PSRWLOCK g_LdrpInvertedFunctionTableSRWLock = NULL;
+CRITICAL_SECTION g_discover_LdrpInvertedFunctionTableSRWLock_critsec;
 
 BOOL APIENTRY DllMain(HANDLE hModule, DWORD dwReason, LPVOID lpReserved)
 {
@@ -518,6 +521,8 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD dwReason, LPVOID lpReserved)
 		unsigned int i;
 		DWORD pids[MAX_PROTECTED_PIDS];
 		unsigned int length = sizeof(pids);
+
+		InitializeCriticalSection(&g_discover_LdrpInvertedFunctionTableSRWLock_critsec);
 
 		/* we can sometimes be injected twice into a process, say if we queued up an APC that we timed out waiting to
 		   complete, and then did a successful createremotethread, so just do a cheap check for our hooks and fake that
@@ -639,6 +644,26 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD dwReason, LPVOID lpReserved)
 				peb->NumberOfProcessors = 2;
 		}
 #endif
+
+		EnterCriticalSection(&g_discover_LdrpInvertedFunctionTableSRWLock_critsec);
+		if (!g_LdrpInvertedFunctionTableSRWLock) {
+			DebugOutput("Discovering LdrpInvertedFunctionTableSRWLock");
+
+			RUNTIME_FUNCTION rf;
+
+			memset(&rf, 0, sizeof(rf));
+			rf.BeginAddress = 0x100;
+			rf.EndAddress = 0x101;
+
+			g_discover_LdrpInvertedFunctionTableSRWLock = 1;
+			BOOL const res = RtlAddFunctionTable(&rf, 1, 0x100);
+
+			if (g_LdrpInvertedFunctionTableSRWLock)
+				DebugOutput("LdrpInvertedFunctionTableSRWLock discovered at 0x%p", g_LdrpInvertedFunctionTableSRWLock);
+			else
+				DebugOutput("no LdrpInvertedFunctionTableSRWLock discovered");
+		}
+		LeaveCriticalSection(&g_discover_LdrpInvertedFunctionTableSRWLock_critsec);
 
 		notify_successful_load();
 	}

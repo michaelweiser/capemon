@@ -1073,6 +1073,9 @@ int hook_api(hook_t *h, int type)
 	return ret;
 }
 
+extern PSRWLOCK g_LdrpInvertedFunctionTableSRWLock;
+extern int g_discover_LdrpInvertedFunctionTableSRWLock;
+
 static unsigned int our_stackwalk(ULONG_PTR _rip, ULONG_PTR sp, PVOID *backtrace, unsigned int count)
 {
 	/* derived from http://www.nynaeve.net/Code/StackWalk64.cpp */
@@ -1083,6 +1086,9 @@ static unsigned int our_stackwalk(ULONG_PTR _rip, ULONG_PTR sp, PVOID *backtrace
 	PVOID handlerdata;
 	ULONG_PTR establisherframe;
 	unsigned int frame;
+
+	if (!g_LdrpInvertedFunctionTableSRWLock || !TryAcquireSRWLockShared(g_LdrpInvertedFunctionTableSRWLock))
+		return 0;
 
 	__try
 	{

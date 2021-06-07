@@ -252,12 +252,25 @@ static hook_info_t tmphookinfo;
 DWORD tmphookinfo_threadid;
 FILETIME ft;
 
+extern PSRWLOCK g_LdrpInvertedFunctionTableSRWLock;
+extern int g_discover_LdrpInvertedFunctionTableSRWLock;
+
 // returns 1 if we should call our hook, 0 if we should call the original function instead
 // on x86 this is actually: hook, esp, ebp
 // on x64 this is actually: hook, rsp, rip of hook (for unwind-based stack walking)
 int WINAPI enter_hook(hook_t *h, ULONG_PTR sp, ULONG_PTR ebp_or_rip)
 {
 	hook_info_t *hookinfo;
+
+	if (g_discover_LdrpInvertedFunctionTableSRWLock) {
+		if (h->new_func == &New_AcquireSRWLockShared || h->new_func == &New_AcquireSRWLockExclusive)
+			return 1;
+
+		return 0;
+	}
+
+	if (!g_LdrpInvertedFunctionTableSRWLock)
+		return 0;
 
 	if (h->fully_emulate)
 		return 1;
