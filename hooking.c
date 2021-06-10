@@ -349,7 +349,7 @@ hook_info_t *hook_info()
 	return ptr;
 }
 
-void get_lasterrors(lasterror_t *errors)
+__declspec(noinline) void get_lasterrors(lasterror_t *errors)
 {
 	char *teb;
 
@@ -362,7 +362,7 @@ void get_lasterrors(lasterror_t *errors)
 }
 
 // we do our own version of this function to avoid the potential debug triggers
-void set_lasterrors(lasterror_t *errors)
+__declspec(noinline) void set_lasterrors(lasterror_t *errors)
 {
 	char *teb = (char *)NtCurrentTeb();
 
